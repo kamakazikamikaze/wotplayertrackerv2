@@ -11,7 +11,7 @@ class TestChecker(unittest.TestCase):
     def test_checksha1(self):
         f = NamedTemporaryFile(delete=False)
         try:
-            f.write('a\nb\nc\nd\n')
+            f.write(b'a\nb\nc\nd\n')
             f.close()
             self.assertEqual(
                 checker.getsha1(f.name),

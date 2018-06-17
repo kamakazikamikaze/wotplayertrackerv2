@@ -19,6 +19,7 @@ $FirewallRule = "WoT Tracker Access"
 $AccountDescription = "WoT Tracker Node Account"
 $HomeDir = "$env:SystemDrive\Users\$NodeAccount"
 $PathOutFile = "wotnodepath.txt"
+$TempDir = "$env:SystemDrive\TEMP"
 
 $PassChar = $NULL;For ($c=33;$c -le 126; $c++) {$PassChar+=,[char][byte]$c}
 
@@ -49,31 +50,18 @@ if ($seclogon.Status -ne "Running"){$seclogon.Start()}
 $NodeCred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $NodeAccount,(ConvertTo-SecureString -AsPlainText $Password -Force)
 Start-Process $PSHOME\powershell.exe -WorkingDirectory $PSHOME -Credential $NodeCred -ArgumentList "-Command `$env:Path" -NoNewWindow -PassThru -Wait -RedirectStandardOutput $PathOutFile
 
-## Setup home directory
-#
-# Because we ran a process as $NodeAccount, the home directory should be automatically created.
-# No need to modify permissions
-
-#New-Item $HomeDir -ItemType Directory
-#$HomeACL = Get-ACL $HomeDir
-#$NTNodeAccount = [System.Security.Principal.NTAccount]$NodeAccount
-#$HomeACL.SetOwner($NTNodeAccount)
-#$accessFlag = [System.Security.AccessControl.FileSystemRights]"Full"
-#$inheritanceFlag = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
-#$propogationFlag = [System.Security.AccessControl.PropagationFlags]::None
-#$typeFlag = [System.Security.AccessControl.AccessControlType]::Allow
-#$ACLRule = New-Object System.Security.AccessControl.FileSystemAccessRule @($NTNodeAccount, $accessFlag, $inheritanceFlag, $propogationFlag, $typeFlag)
-#$HomeACL.AddAccessRule($ACLRule)
-#Set-ACL $HomeDir $HomeACL
-
 ## Check Python
 $PythonExists = $false
 $NodePath = (Get-Content $PathOutFile).Split(";")
 Remove-Item $PathOutFile
 $NodePath | ForEach-Object {if ($_.Contains("Python")) {$PythonExists = $true; break}}
 if (-not $PythonExists){
-    # Invoke-WebRequest "https://www.python.org/ftp/python/3.7.0/python-3.7.0-amd64.exe C:\TEMP\python-3.7.0-amd64.exe" -OutFile "C:\TEMP\python-3.7.0-amd64.exe"
-    # Start-Process $PSHome\Powershell.exe -WorkingDirectory $PSHOME -Credential $NodeCred -ArgumentList "C:\TEMP\python-3.7.0-amd64.exe /passive PrependPath=1 Include_doc=0 InstallLauncherAllUsers=0 SimpleInstall=1 SimpleInstallDescription=`"WoT Node Setup currently running for Python. Please wait...`"" -NoNewWindow -PassThru -Wait
+    [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
+    $PyVersion = "3.6.5" # 3.7.0 is still beta
+    $PyInstaller = "python-$PyVersion-amd64.exe"
+    Invoke-WebRequest "https://www.python.org/ftp/python/$PyVersion/$PyInstaller" -OutFile "$TempDir\$PyInstaller"
+    Start-Process $PSHome\Powershell.exe -WorkingDirectory $PSHOME -Credential $NodeCred -ArgumentList "$TempDir\$PyInstaller /passive PrependPath=1 Include_doc=0 InstallLauncherAllUsers=0 SimpleInstall=1 SimpleInstallDescription=`"WoT Node Setup currently running for Python. Please wait...`"" -NoNewWindow -PassThru -Wait
+    Remove-Item $TempDir\$PyInstaller
 }
 ## Add scheduler task for running node
 

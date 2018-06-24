@@ -9,6 +9,8 @@ fi
 pyversion=3.6.5
 username=wotnode
 pyurl=https://www.python.org/ftp/python/$pyversion/Python-$pyversion.tgz
+pysha=12046118d20f9d2007dcc515b15adb4d28a0f7f7
+shacmd=sha1sum
 kernel=$(uname -s)
 
 if [[ $kernel = "Darwin"* ]]
@@ -23,6 +25,7 @@ then
 	uid=$((umaxid+1))
 	gmaxid=$(dscl . -list /Groups PrimaryGroupID | awk '{print $2}' | sort -ug | tail -1)
 	gid=$((gmaxid+1))
+	shacmd=shasum
 
 	## Create user
 	# Group
@@ -35,7 +38,7 @@ then
 	# Home
 	dscl . -create /Users/$username NFSHomeDirectory $homedir
 	#createhomedir -c > /dev/null
-	createhomedir -u $username > /dev/null
+	createhomedir -l -u $username > /dev/null
 else
 	## Variables
 	cronfile=/etc/cron.d/wottracker
@@ -49,16 +52,19 @@ else
 fi
 
 ## Python setup
-mkdir $homedir/python
-pushd $homedir/python
-wget $pyurl
-tar xzf Python-$pyversion.tgz
+mkdir -p $homedir/python
+if [ ! -e /tmp/Python-$pyversion.tgz ] || [ "$($shacmd /tmp/Python-$pyversion.tgz)" != "$pysha" ]
+then
+	wget $pyurl -O /tmp/Python-$pyversion.tgz
+fi
+pushd $homedir/python # 1
+tar xzf /tmp/Python-$pyversion.tgz
 find $homedir/python -type d | xargs chmod 0755
-pushd Python-$pyversion
+pushd Python-$pyversion # 2
 ./configure --prefix=$homedir/python
 make && make install
-rm $homedir/python/Python-$pyversion.tgz
-popd # $homedir/python
+#rm $homedir/python/Python-$pyversion.tgz
+popd # $homedir/python, 2
 rm -rf Python-$pyversion
 chown -R $username:$group $homedir/python
 
@@ -67,20 +73,28 @@ chown -R $username:$group $homedir/python
 #wget --no-check-certificate https://bootstrap.pypa.io/get-pip.py -O - | sudo -u $username bin/python - --user
 
 ## Virtualenv setup
-sudo -u wotnode $homedir/python/bin/pyvenv $homedir/wottracker
+sudo -u $username $homedir/python/bin/pyvenv $homedir/wottracker
 
 ## Install modules
 cd ..
-wget --no-check-certificate https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/requirements.txt -O
+wget https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/requirements.txt
 chown $username:$group requirements.txt
-sudo -u wotnode $homedir/python/bin/pip3 install -r requirements.txt
+sudo -u $username $homedir/python/bin/pip3 install -r requirements.txt
 
 ## Return to working directory
-popd
+popd # 1
 
 if [[ $kernel = "Darwin"* ]]
 then
 	## Add scheduler task for running node
+	# UTC calculation: https://stackoverflow.com/a/30371208/1993468
+	offset=$(date +%z) # get TZ offset as [+-]<HH><MM> - for *now*
+	sign=${offset:0:1} # get sign
+	hours=${offset:1:2} # get hours
+	mins=${offset:3:2} # get minutes
+	# Want to start at least 15 minutes early. Hopefully this calculates right
+	hourstart=$((24 $sign $hours - 1 % 24))
+	minstart=$((60 $sign $mins - 15 % 60))
 	cat <<EOF >> $cronfile
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -91,7 +105,7 @@ then
 
   <key>ProgramArguments</key>
   <array>
-    <string>cd $homedir && source wottracker/bin/activate && python node.py</string>
+    <string>source wottracker/bin/activate && python node.py</string>
   </array>
 
   <key>Nice</key>
@@ -100,13 +114,19 @@ then
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>
+    <integer>$hourstart</integer>
+    <key>Minute</key>
+    <integer>$minstart</integer>
+  </dict>
 
   <key>UserName</key>
   <string>$username</string>
 
+  <key>RootDirectory</key>
+  <string>$homedir</string>
+
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
 
 </dict>
 </plist>

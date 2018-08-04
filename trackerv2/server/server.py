@@ -10,18 +10,22 @@ from work import setup_work
 
 workgenerator = None
 assignedwork = None
+assignedworkcount = 0
 timeouts = None
 stalework = None
 server_config = None
 registered = set()
 # batches_complete = 0
 startwork = False
+workdone = False
 
 
 def move_to_stale(ipaddress, work):
+    global assignedworkcount
     # Not going to catch errors yet for debugging purposes
     del assignedwork[ipaddress][work[0]]
     stalework.append(work)
+    assignedworkcount -= 1
 
 
 class MainHandler(tornado.web.RequestHandler):
@@ -51,6 +55,8 @@ class DebugHandler(tornado.web.RequestHandler):
             self.write(str(registered))
         elif uri == 'stale':
             self.write(str(stalework))
+        elif uri == 'assignedcount':
+            self.write(str(assignedworkcount))
         else:
             self.write('No debug output for: ' + uri)
         # self.write(str(self.request.uri))
@@ -199,14 +205,25 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
         WorkWSHandler.wschecks[client].start()
 
     def send_work(self):
+        global workdone
+        global assignedworkcount
         if not startwork:
             return
+        if workdone:
+            self.close()
         client = self.request.remote_ip
         while len(assignedwork[client]) < server_config['max tasks']:
             try:
                 work = stalework.pop()
             except IndexError:
-                work = next(workgenerator)
+                try:
+                    work = next(workgenerator)
+                    if work is None:
+                        raise StopIteration
+                except StopIteration:
+                    if len(stalework) == 0 and assignedworkcount == 0:
+                        workdone = True
+                    return
             self.write_message(json_encode(
                 {
                     'batch': work[0],
@@ -221,6 +238,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
                 client,
                 work
             )
+            assignedworkcount += 1
 
     def on_close(self):
         client = self.request.remote_ip
@@ -228,6 +246,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
         del WorkWSHandler.wschecks[client]
 
     def on_message(self, message):
+        global assignedworkcount
         client = self.request.remote_ip
         try:
             work = json_decode(message)
@@ -238,6 +257,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
                 )
                 del timeouts[client][work['batch']]
                 del assignedwork[client][work['batch']]
+                assignedworkcount -= 1
                 # global batches_complete
                 # batches_complete += 1
             except KeyError:

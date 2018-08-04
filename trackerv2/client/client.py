@@ -25,7 +25,13 @@ class TrackerClientNode:
             self.query, 1000 // self.throttle)
 
     def on_message(self, message):
-        TrackerClientNode.workqueue.put_nowait(json_decode(message))
+        if message is not None:
+            TrackerClientNode.workqueue.put_nowait(json_decode(message))
+        else:
+            self.stop()
+            self.conn.close()
+            # TODO: Need more graceful way to stop main loop
+            ioloop.IOLoop.current().add_callback(ioloop.IOLoop.current().stop)
 
     async def query(self):
         try:
@@ -63,6 +69,7 @@ class TrackerClientNode:
 
     def __del__(self):
         self.schedule.stop()
+
 
 if __name__ == '__main__':
     from argparse import ArgumentParser

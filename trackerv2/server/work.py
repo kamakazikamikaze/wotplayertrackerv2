@@ -1,5 +1,6 @@
 from itertools import chain
 
+
 def setup_work(config):
     r"""
     Create the initial player groups for workers to query
@@ -24,7 +25,7 @@ def setup_work(config):
         ps4_start_account,
         ps4_max_account
     )
-    
+
     constraints = (('xbox', xbox_max_account), ('ps4', ps4_max_account))
     plist = []
     # p = playerschain.next()

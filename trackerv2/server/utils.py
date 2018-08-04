@@ -1,10 +1,9 @@
-from collections import deque
-from itertools import chain
+from collections import defaultdict
+from hashlib import sha1
 from json import load, dump
-from uuid import NAMESPACE_DNS, uuid5
 from os import walk
 from os.path import join as pjoin
-from hashlib import sha1
+from uuid import NAMESPACE_DNS, uuid5
 
 BUF_SIZE = 65536
 
@@ -24,11 +23,6 @@ def genuuid(ip):
     return str(uuid5(NAMESPACE_DNS, ip))
 
 
-def load_config(filename='./config/server.json'):
-    with open(filename) as f:
-        return load(f)
-
-
 def genhashes(dirpath='./files'):
     hashes = {}
     for _, dirs, _ in walk(dirpath):
@@ -39,75 +33,17 @@ def genhashes(dirpath='./files'):
                     hashes[d][fi] = getsha1(pjoin(dirpath, d, fi))
     return hashes
 
-
-def setup_work(config):
-    r"""
-    Create the initial player groups for workers to query
-
-    Work is stored in the format of (tuple(player IDs), realm)
-
-    :returns: Work tasks for nodes
-    :rtype: deque
-    """
-    xbox_start_account = 5000 if 'start account' not in config[
-        'xbox'] else config['xbox']['start account']
-    xbox_max_account = 13325000 if 'max account' not in config[
-        'xbox'] else config['xbox']['max account']
-    ps4_start_account = 1073740000 if 'start account' not in config[
-        'ps4'] else config['ps4']['start account']
-    ps4_max_account = 1080500000 if 'max account' not in config[
-        'ps4'] else config['ps4']['max account']
-
-    playerschain = generate_players(
-        xbox_start_account,
-        xbox_max_account,
-        ps4_start_account,
-        ps4_max_account
-    )
-    work_queue = deque()
-
-    realm = 'xbox'
-    plist = []
-    p = playerschain.next()
-    while p <= xbox_max_account:
-        if len(plist) == 100:
-            work_queue.append((tuple(plist), realm))
-            plist = []
-        plist.append(p)
-        p = playerschain.next()
-    if plist:
-        work_queue.append((tuple(plist), realm))
-    plist = []
-    realm = 'ps4'
-    try:
-        # Replace with `while True`?
-        while p <= ps4_max_account:
-            if len(plist) == 100:
-                work_queue.append((tuple(plist), realm))
-                plist = []
-            plist.append(p)
-            p = playerschain.next()
-    except StopIteration:
-        if plist:
-            work_queue.append((tuple(plist), realm))
-
-    return work_queue
+def load_config(filename='./config/server.json'):
+    with open(filename) as f:
+        return load(f)
 
 
-def generate_players(xbox_start, xbox_finish, ps4_start, ps4_finish):
-    '''
-    Create the list of players to query for
-
-    :param int xbox_start: Starting Xbox account ID number
-    :param int xbox_finish: Ending Xbox account ID number
-    :param int ps4_start: Starting PS4 account ID number
-    :param int ps4_finish: Ending PS4 account ID number
-    '''
-    return chain(range(xbox_start, xbox_finish + 1),
-                 range(ps4_start, ps4_finish + 1))
+def create_client_config(filename='./config/client.json'):
+    with open(filename, 'w') as f:
+        dump({'application_id': 'replaceme', 'max tasks': 15}, f)
 
 
-def create_config(filename):
+def create_server_config(filename='./config/server.json'):
     newconfig = {
         'application_id': 'demo',
         'language': 'en',
@@ -122,7 +58,7 @@ def create_config(filename):
         'max retries': 5,
         'timeout': 15,
         'debug': False,
-        'processes': 12,
+        'max tasks': 15,
         'logging': {
             'errors': 'logs/error-%Y_%m_%d'
         },
@@ -151,3 +87,6 @@ def create_config(filename):
     }
     with open(filename, 'w') as f:
         dump(newconfig, f)
+
+def nested_dd():
+    return defaultdict(nested_dd)

@@ -1,5 +1,6 @@
 # from threading import _BoundedSemaphore as BoundedSemaphore, Timer
-from multiprocessing import BoundedSemaphore
+# from multiprocessing import BoundedSemaphore
+from tornado.locks import BoundedSemaphore
 from threading import Timer
 from time import sleep
 

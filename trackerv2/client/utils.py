@@ -1,8 +1,9 @@
-# from threading import _BoundedSemaphore as BoundedSemaphore, Timer
+from json import load
 # from multiprocessing import BoundedSemaphore
-from tornado.locks import BoundedSemaphore
 from threading import Timer
+# from threading import _BoundedSemaphore as BoundedSemaphore, Timer
 from time import sleep
+from tornado.locks import BoundedSemaphore
 
 
 # https://stackoverflow.com/a/16686329/1993468
@@ -27,3 +28,8 @@ class RatedSemaphore(BoundedSemaphore):
 
     def release(self):
         pass  # do nothing (only time-based release() is allowed)
+
+
+def load_config(filename='./config/client.json'):
+    with open(filename) as f:
+        return load(f)

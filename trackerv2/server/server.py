@@ -17,10 +17,12 @@ registered = set()
 # batches_complete = 0
 startwork = False
 
+
 def move_to_stale(ipaddress, work):
     # Not going to catch errors yet for debugging purposes
     del assignedwork[ipaddress][work[0]]
     stalework.append(work)
+
 
 class MainHandler(tornado.web.RequestHandler):
 
@@ -191,34 +193,14 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
 
     def open(self, *args):
         client = self.request.remote_ip
-        if startwork:
-            self.send_work()
-            # while len(assignedwork[client]) < 15:
-            #     # should we attempt to .pop() anyways and catch the exception?
-            #     if len(stalework) > 0:
-            #         work = stalework.pop()
-            #     else:
-            #         work = next(workgenerator)
-            #     self.write_message(json_encode(
-            #         {
-            #             'batch': work[0],
-            #             'players': work[1],
-            #             'realm': work[2]
-            #         }
-            #     ))
-            #     assignedwork[client][work[0]] = work
-            #     timeouts[client][work[0]] = tornado.ioloop.IOLoop.current().call_later(
-            #         server_config['timeout'],
-            #         move_to_stale,
-            #         client,
-            #         work
-            #     )
-            # Check if the client has enough work every 200 ms
-            WorkWSHandler.wschecks[client] = tornado.ioloop.PeriodicCallback(self.send_work, 200)
-            WorkWSHandler.wschecks[client].start()
-
+        self.send_work()
+        WorkWSHandler.wschecks[client] = tornado.ioloop.PeriodicCallback(
+            self.send_work, 200)
+        WorkWSHandler.wschecks[client].start()
 
     def send_work(self):
+        if not startwork:
+            return
         client = self.request.remote_ip
         while len(assignedwork[client]) < server_config['max tasks']:
             try:
@@ -240,17 +222,14 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
                 work
             )
 
-    # In the case of a client going offline, we can mark their work as "stale" here.
-    # However, we already have timers set to do that and will let them handle it.
     def on_close(self):
         client = self.request.remote_ip
         WorkWSHandler.wschecks[client].stop()
         del WorkWSHandler.wschecks[client]
 
     def on_message(self, message):
-        # Handle results feed, send new work
-        if '{' in message:
-            client = self.request.remote_ip
+        client = self.request.remote_ip
+        try:
             work = json_decode(message)
             try:
                 # Remove timeout first
@@ -264,39 +243,10 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
             except KeyError:
                 pass
             self.send_work()
-            ## Calling a class method instead, to consolidate code
-            # if len(assignedwork[client]) < server_config['max tasks']:
-            #     # should we attempt to .pop() anyways and catch the exception?
-            #     if len(stalework) > 0:
-            #         work = stalework.pop()
-            #     else:
-            #         work = next(workgenerator)
-            #     self.write_message(json_encode(
-            #         {
-            #             'batch': work[0],
-            #             'players': work[1],
-            #             'realm': work[2]
-            #         }
-            #     ))
-            #     assignedwork[client][work[0]] = work
-            #     timeouts[client][work[0]] = tornado.ioloop.IOLoop.current().call_later(
-            #         server_config['timeout'],
-            #         move_to_stale,
-            #         client,
-            #         work
-            #     )
-        ## We'll allow the work to time out instead of having clients cancel
-        # elif 'cancel' in message:
-        #     for batch in message.split()[1:]:
-        #         batch = int(message.split()[-1])
-        #         if batch not in assignedwork[self.request.remote_ip]:
-        #             raise IndexError
-        #         stalework.append(assignedwork[self.request.remote_ip][batch])
-        #         del assignedwork[self.request.remote_ip][batch]
-        #         tornado.ioloop.IOLoop.current().remove_timeout(
-        #             timeouts[self.request.remote_ip][batch]
-        #         )
-        #         del timeouts[self.request.remote_ip][batch]
+        except JSONDecodeError:
+            # Will the clients ever send erroneous result formats?
+            pass
+
 
 def make_app(sfiles, clientconfig):
     return tornado.web.Application([

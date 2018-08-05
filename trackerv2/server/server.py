@@ -2,9 +2,7 @@ from collections import deque
 from json.decoder import JSONDecodeError
 from os.path import join as pjoin
 from tornado.escape import json_decode, json_encode
-import tornado.ioloop
-import tornado.web
-import tornado.websocket
+from tornado import ioloop, web, websocket
 from utils import genuuid, genhashes, load_config, nested_dd
 from work import setup_work
 
@@ -28,13 +26,13 @@ def move_to_stale(ipaddress, work):
     assignedworkcount -= 1
 
 
-class MainHandler(tornado.web.RequestHandler):
+class MainHandler(web.RequestHandler):
 
     def get(self):
         self.write('WoT Console Player Tracker v2 is running!')
 
 
-class UUIDHandler(tornado.web.RequestHandler):
+class UUIDHandler(web.RequestHandler):
 
     # @tornado.web.asynchronous
     def get(self):
@@ -42,7 +40,7 @@ class UUIDHandler(tornado.web.RequestHandler):
         # self.write({'uuid': genuuid(self.request.remote_ip)})
 
 
-class DebugHandler(tornado.web.RequestHandler):
+class DebugHandler(web.RequestHandler):
 
     def get(self, uri=None):
         if uri == 'hashes':
@@ -62,7 +60,7 @@ class DebugHandler(tornado.web.RequestHandler):
         # self.write(str(self.request.uri))
 
 
-class UpdateHandler(tornado.web.RequestHandler):
+class UpdateHandler(web.RequestHandler):
     r"""
     Client updates (scripts) as served here
     """
@@ -91,7 +89,7 @@ class UpdateHandler(tornado.web.RequestHandler):
                     client['filename'])
 
 
-class WorkHandler(tornado.web.RequestHandler):
+class WorkHandler(web.RequestHandler):
 
     def get(self):
         if self.request.remote_ip not in registered:
@@ -114,7 +112,7 @@ class WorkHandler(tornado.web.RequestHandler):
                 }
             ))
             assignedwork[client][work[0]] = work
-            timeouts[client][work[0]] = tornado.ioloop.IOLoop.current().call_later(
+            timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
                 move_to_stale,
                 client,
@@ -146,7 +144,7 @@ class WorkHandler(tornado.web.RequestHandler):
                 self.set_status(400)
 
 
-class CancelWorkHandler(tornado.web.RequestHandler):
+class CancelWorkHandler(web.RequestHandler):
 
     def get(self, uri=None):
         self.write(uri)
@@ -159,7 +157,7 @@ class CancelWorkHandler(tornado.web.RequestHandler):
                 raise IndexError
             stalework.append(assignedwork[self.request.remote_ip][uri])
             del assignedwork[self.request.remote_ip][uri]
-            tornado.ioloop.IOLoop.current().remove_timeout(
+            ioloop.IOLoop.current().remove_timeout(
                 timeouts[self.request.remote_ip][uri]
             )
             del timeouts[self.request.remote_ip][uri]
@@ -168,7 +166,7 @@ class CancelWorkHandler(tornado.web.RequestHandler):
             self.set_status(401)
 
 
-class StatusHandler(tornado.web.RequestHandler):
+class StatusHandler(web.RequestHandler):
     r"""
     Reviewing progress of the current run or connected clients
     """
@@ -177,7 +175,7 @@ class StatusHandler(tornado.web.RequestHandler):
         pass
 
 
-class SetupHandler(tornado.web.RequestHandler):
+class SetupHandler(web.RequestHandler):
     r"""
     Endpoint for fetching client-side configuration parameters
     """
@@ -192,17 +190,19 @@ class SetupHandler(tornado.web.RequestHandler):
         registered.add(self.request.remote_ip)
 
 
-class WorkWSHandler(tornado.websocket.WebSocketHandler):
+class WorkWSHandler(websocket.WebSocketHandler):
     wschecks = dict()
+    wsconns = set()
     # def check_origin(self, origin):
     #     return True
 
     def open(self, *args):
         client = self.request.remote_ip
         self.send_work()
-        WorkWSHandler.wschecks[client] = tornado.ioloop.PeriodicCallback(
+        WorkWSHandler.wschecks[client] = ioloop.PeriodicCallback(
             self.send_work, 200)
         WorkWSHandler.wschecks[client].start()
+        WorkWSHandler.wsconns.add(self)
 
     def send_work(self):
         global workdone
@@ -232,7 +232,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
                 }
             ))
             assignedwork[client][work[0]] = work
-            timeouts[client][work[0]] = tornado.ioloop.IOLoop.current().call_later(
+            timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
                 move_to_stale,
                 client,
@@ -244,6 +244,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
         client = self.request.remote_ip
         WorkWSHandler.wschecks[client].stop()
         del WorkWSHandler.wschecks[client]
+        WorkWSHandler.wsconns.remove(self)
 
     def on_message(self, message):
         global assignedworkcount
@@ -252,7 +253,7 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
             work = json_decode(message)
             try:
                 # Remove timeout first
-                tornado.ioloop.IOLoop.current().remove_timeout(
+                ioloop.IOLoop.current().remove_timeout(
                     timeouts[client][work['batch']]
                 )
                 del timeouts[client][work['batch']]
@@ -268,8 +269,16 @@ class WorkWSHandler(tornado.websocket.WebSocketHandler):
             pass
 
 
+def try_exit():
+    if workdone:
+        print('Work complete. Shutting down server')
+        ioloop.IOLoop.current().stop()
+        for conn in WorkWSHandler.wsconns:
+            conn.close()
+
+
 def make_app(sfiles, clientconfig):
-    return tornado.web.Application([
+    return web.Application([
         (r"/", MainHandler),
         (r"/uuid", UUIDHandler),
         (r"/setup", SetupHandler, dict(config=clientconfig)),
@@ -280,11 +289,9 @@ def make_app(sfiles, clientconfig):
         (r"/cancel/(\d+)", CancelWorkHandler),
         (r"/status", StatusHandler),
         (r"/debug/([^/]*)", DebugHandler),
-        (r"/files/nix/([^/]*)",
-         tornado.web.StaticFileHandler,
+        (r"/files/nix/([^/]*)", web.StaticFileHandler,
          {'path': pjoin(sfiles, 'nix')}),
-        (r"/files/win/([^/]*)",
-         tornado.web.StaticFileHandler,
+        (r"/files/win/([^/]*)", web.StaticFileHandler,
          {'path': pjoin(sfiles, 'win')}),
     ])
 
@@ -324,7 +331,10 @@ if __name__ == '__main__':
     try:
         app = make_app(static_files, client_config)
         app.listen(args.port)
-        tornado.ioloop.IOLoop.current().start()
+        exitcall = ioloop.PeriodicCallback(try_exit, 1000)
+        exitcall.start()
+        ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
         print('Shutting down')
-        tornado.ioloop.IOLoop.current().stop()
+        ioloop.IOLoop.current().stop()
+        exitcall.stop()

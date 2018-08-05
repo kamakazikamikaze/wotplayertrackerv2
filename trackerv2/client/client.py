@@ -9,6 +9,8 @@ from utils import load_config
 # aiohttp
 # from wotconsole import player_data, WOTXResponseError
 
+workdone = False
+
 
 class TrackerClientNode:
     # The API limits the number of requests per IP. Unless we develop a
@@ -28,10 +30,10 @@ class TrackerClientNode:
         if message is not None:
             TrackerClientNode.workqueue.put_nowait(json_decode(message))
         else:
+            global workdone
             self.stop()
             self.conn.close()
-            # TODO: Need more graceful way to stop main loop
-            ioloop.IOLoop.current().add_callback(ioloop.IOLoop.current().stop)
+            workdone = True
 
     async def query(self):
         try:
@@ -71,6 +73,11 @@ class TrackerClientNode:
         self.schedule.stop()
 
 
+def try_exit():
+    if workdone:
+        print('Work complete. Shutting down client')
+        ioloop.IOLoop.current().stop()
+
 if __name__ == '__main__':
     from argparse import ArgumentParser
     agp = ArgumentParser()
@@ -100,7 +107,10 @@ if __name__ == '__main__':
         # client.connect()
         ioloop.IOLoop.current().run_sync(client.connect)
         client.start()
+        exitcall = ioloop.PeriodicCallback(try_exit, 1000)
+        exitcall.start()
         ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()
+        exitcall.stop()

@@ -1,4 +1,4 @@
-from json import load
+from json import load, dump
 # from multiprocessing import BoundedSemaphore
 from threading import Timer
 # from threading import _BoundedSemaphore as BoundedSemaphore, Timer
@@ -33,3 +33,8 @@ class RatedSemaphore(BoundedSemaphore):
 def load_config(filename='./config/client.json'):
     with open(filename) as f:
         return load(f)
+
+
+def write_config(config, filename='./config/client.json'):
+    with open(filename, 'w') as f:
+        dump(config, f)

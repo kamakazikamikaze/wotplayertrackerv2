@@ -1,10 +1,11 @@
+from platform import system
 from tornado import ioloop
 from tornado.escape import json_decode, json_encode
-from tornado.httpclient import AsyncHTTPClient, HTTPRequest
+from tornado.httpclient import AsyncHTTPClient, HTTPClient, HTTPRequest
 from tornado.queues import Queue, QueueEmpty
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
-from utils import load_config
+from utils import load_config, write_config
 # TODO: Add async capability to wotconsole, limiting to Python 3.5+, using
 # aiohttp
 # from wotconsole import player_data, WOTXResponseError
@@ -73,6 +74,39 @@ class TrackerClientNode:
         self.schedule.stop()
 
 
+def download_file():
+    pass
+
+
+def setup(config, configfile):
+    http_client = HTTPClient()
+    async_http_client = AsyncHTTPClient()
+    newconfig = json_decode(
+        http_client.fetch(
+            urljoin(
+                config['server'],
+                'setup')))
+    if system() == 'Windows':
+        plat = 'win'
+    else:
+        plat = 'nix'
+    for filename in newwconfig['files']:
+        # Get hash
+        # Send hash in request
+        pass
+    del newconfig['files']
+    write_config(configfile, newconfig)
+    config = newconfig
+    http_client.fetch(
+        HTTPRequest(
+            urljoin(
+                config['server'],
+                'setup'),
+            'POST',
+            allow_nonstandard_methods=True))
+    return config
+
+
 def try_exit():
     if workdone:
         print('Work complete. Shutting down client')
@@ -93,17 +127,11 @@ if __name__ == '__main__':
         help='Client configuration file to use',
         default='./config/client.json')
     args = agp.parse_args()
+    config = load_config(args.config)
 
     try:
-        client = TrackerClientNode(load_config(args.config))
-        http_client = AsyncHTTPClient()
-        http_client.fetch(
-            HTTPRequest(
-                urljoin(
-                    client.server,
-                    'setup'),
-                'POST',
-                allow_nonstandard_methods=True))
+        config = setup(config, args.config)
+        client = TrackerClientNode(config)
         # client.connect()
         ioloop.IOLoop.current().run_sync(client.connect)
         client.start()

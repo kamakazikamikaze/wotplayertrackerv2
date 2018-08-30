@@ -35,7 +35,7 @@ virtualenv wottracker
 source wottracker\bin\
 
 ## Install Python modules
-Invoke-WebRequest https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/requirements.txt -OutFile requirements.txt
+Invoke-WebRequest https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/client-requirements.txt -OutFile requirements.txt
 pip install -r requirements.txt
 
 ## Download tracker node update file

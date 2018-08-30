@@ -9,8 +9,6 @@ fi
 pyversion=3.7.0
 username=wotnode
 pyurl=https://www.python.org/ftp/python/$pyversion/Python-$pyversion.tgz
-pysha=9E96C934F5D16399F860812B4AC7002B
-shacmd=sha1sum
 kernel=$(uname -s)
 
 if [[ $kernel = "Darwin"* ]]
@@ -19,13 +17,12 @@ then
 	username=_$username
 	group=$username
 	homedir=/Users/$username
-	cronfile=/usr/lib/cron/tabs/$username
+	cronfile=/Library/LaunchDaemons/com.wot.tracker.plist
 	download=curl
 	umaxid=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -ug | tail -1)
 	uid=$((umaxid+1))
 	gmaxid=$(dscl . -list /Groups PrimaryGroupID | awk '{print $2}' | sort -ug | tail -1)
 	gid=$((gmaxid+1))
-	shacmd=shasum
 
 	## Create user
 	# Group
@@ -38,7 +35,7 @@ then
 	# Home
 	dscl . -create /Users/$username NFSHomeDirectory $homedir
 	#createhomedir -c > /dev/null
-	createhomedir -l -u $username > /dev/null
+	createhomedir -u $username > /dev/null
 else
 	## Variables
 	cronfile=/etc/cron.d/wottracker
@@ -52,12 +49,9 @@ else
 fi
 
 ## Python setup
-mkdir -p $homedir/python
+mkdir $homedir/python
 pushd $homedir/python
-if [ ! -e ./Python-$pyversion.tgz ] || [ "$($shacmd ./Python-$pyversion.tgz)" != "$pysha" ]
-then
-	wget $pyurl -O
-fi
+wget $pyurl
 tar xzf Python-$pyversion.tgz
 find $homedir/python -type d | xargs chmod 0755
 pushd Python-$pyversion
@@ -73,45 +67,65 @@ chown -R $username:$group $homedir/python
 #wget --no-check-certificate https://bootstrap.pypa.io/get-pip.py -O - | sudo -u $username bin/python - --user
 
 ## Virtualenv setup
-sudo -u $username $homedir/python/bin/pyvenv $homedir/wottracker
+sudo -u wotnode $homedir/python/bin/pyvenv $homedir/wottracker
 
 ## Install modules
 cd ..
-wget --no-check-certificate https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/client-requirements.txt -O
-chown $username:$group client-requirements.txt
-sudo -u $username $homedir/python/bin/pip3 install -r client-requirements.txt
+wget --no-check-certificate https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/requirements.txt -O
+chown $username:$group requirements.txt
+sudo -u wotnode $homedir/python/bin/pip3 install -r requirements.txt
 
 ## Return to working directory
-popd	
+popd
 
-touch $cronfile
 if [[ $kernel = "Darwin"* ]]
 then
-	hour=$(( (( $(date +%:z | cut -d: -f1) + 24)) % 24 ))
-	minute=$(( (( $(date +%:z | cut -d: -f2) + 60)) % 60))
-	echo 'MAILTO=""' >> $cronfile
-	echo "$minute $hour * * *  cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json" >> $cronfile
-	echo "0 0 * * * cd $homedir && ./adjustcron.sh" >> $cronfile
+	## Add scheduler task for running node
+	cat <<EOF >> $cronfile
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(echo $cronfile | cut -d/ -f3)</string>
 
-	# macOS doesn't have an updated cron binary to use the CRON_TZ flag. We'll have to run a script to adjust for daylight savings manually
-	touch $homedir/adjustcron.sh
-	chmod 755 $homedir/adjustcron.sh
-	chown $username $homedir/adjustcron.sh
-	echo '#!/bin/bash' >> $homedir/adjustcron.sh
-	echo "cronfile=$cronfile" >> $homedir/adjustcron.sh
-	echo "homedir=$homedir" >> $homedir/adjustcron.sh
-	echo 'hour=$(( (( $(date +%:z | cut -d: -f1) + 24)) % 24 ))' >> $homedir/adjustcron.sh
-	echo 'minute=$(( (( $(date +%:z | cut -d: -f1) + 60)) % 60 ))' >> $homedir/adjustcron.sh
-	echo 'echo '"'"'MAILTO="" >> $cronfile' >> $homedir/adjustcron.sh
-	echo 'echo "$minute $hour * * *  cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json" >> $cronfile' >> $homedir/adjustcron.sh
-	echo 'echo "0 0 * * * cd $homedir && ./adjustcron.sh" >> $cronfile' >> $homedir/adjustcron.sh
+  <key>ProgramArguments</key>
+  <array>
+    <string>cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json</string>
+  </array>
+
+  <key>Nice</key>
+  <integer>1</integer>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>0</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>UserName</key>
+  <string>$username</string>
+
+<!-
+  <key>RunAtLoad</key>
+  <true/>
+-->
+
+</dict>
+</plist>
+EOF
+	launchctl load $cronfile
+
 	## Add Firewall exception
 	# I think we'll leave firewall exceptions to the user to implement.
 else
 	## Add scheduler task for running node
+	touch $cronfile
 	echo "CRON_TZ=UTC" >> $cronfile
 	echo "00 0 * * *  $username  cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json" >> $cronfile
-
+	
 	## Add Firewall exception
 	# I think we'll leave firewall exceptions to the user to implement. SuSE, Redhat, Ubuntu all have different programs
 fi

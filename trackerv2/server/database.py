@@ -17,12 +17,12 @@ async def setup_database(db):
             _last_api_pull timestamp NOT NULL)''')
 
     _ = await conn.execute('''
-        CREATE TABLE IF NOT EXISTS {} (
+        CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(datetime.utcnow().strftime('total_battles_%Y_%m_%d')))
 
     _ = await conn.execute('''
-        CREATE TABLE IF NOT EXISTS {} (
+        CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
 
@@ -63,10 +63,10 @@ async def expand_max_players(config, filename='./config/server.json'):
     update = False
 
     conn = await asyncpg.connect(**dbconf)
-    # max_xbox = int(await conn.execute('SELECT MAX(account_id) FROM players WHERE console = "xbox"'))
-    # max_ps4 = int(await conn.execute('SELECT MAX(account_id) FROM players
-    # WHERE console = "ps4"'))
-    maximum = await conn.fetch('SELECT MAX(account_id), console FROM players GROUP BY console')
+
+    maximum = await conn.fetch(
+        'SELECT MAX(account_id), console FROM players GROUP BY console'
+    )
     for record in maximum:
         if record['console'] == 'xbox':
             max_xbox = record['max']

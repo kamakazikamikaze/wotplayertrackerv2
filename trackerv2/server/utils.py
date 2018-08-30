@@ -39,14 +39,18 @@ def load_config(filename='./config/server.json'):
         return load(f)
 
 
-def create_client_config(filename='./config/client.json'):
+def write_config(config, filename='./config/server.json'):
     with open(filename, 'w') as f:
-        dump({
-            'application_id': 'replaceme',
-            'throttle': 10,
-            'server': 'http://replaceme/',
-            'timeout': 5},
-            f, indent=4)
+        dump(config, f)
+
+
+def create_client_config(filename='./config/client.json'):
+    config = {
+        'application_id': 'replaceme',
+        'throttle': 10,
+        'server': 'http://replaceme/',
+        'timeout': 5}
+    write_config(config, filename)
 
 
 def create_server_config(filename='./config/server.json'):

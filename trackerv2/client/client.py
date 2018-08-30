@@ -69,13 +69,19 @@ class TrackerClientNode:
         # await self.send_results(work)
         # result = {'batch': work['batch']}
         result = {}
-        result['data'] = json_decode(
-            response.body)['data']  # IndexError if missing
-        # time.time() which is epoch (UTC). No need to create a timestamp here
-        result['_last_api_pull'] = response.request.start_time
-        result['batch'] = work['batch']
-        result['console'] = work['realm']
-        await self.conn.write_message(json_encode(result))
+        try:
+            result['data'] = json_decode(response.body)['data']
+            # time.time() which is epoch (UTC). No need to create a timestamp
+            # here
+            result['_last_api_pull'] = response.request.start_time
+            result['batch'] = work['batch']
+            result['console'] = work['realm']
+            await self.conn.write_message(json_encode(result))
+        except ValueError:
+            print(
+                'Batch {}: ERROR : No data for '.format(
+                    work['batch']), json_decode(
+                    response.body))
 
     # async def send_results(self, result):
     #     # Don't block messages to server

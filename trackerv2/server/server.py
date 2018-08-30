@@ -7,8 +7,8 @@ from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
 # from tornado.queues import Queue, QueueEmpty
 
-from database import setup_database, expand_max_players
-from utils import genuuid, genhashes, load_config, nested_dd
+from database import setup_database
+from utils import genuuid, genhashes, load_config, nested_dd, write_config
 from work import setup_work
 
 workgenerator = None
@@ -259,9 +259,14 @@ class WorkWSHandler(websocket.WebSocketHandler):
         except JSONDecodeError:
             # Will the clients ever send erroneous result formats?
             return
-        ioloop.IOLoop.current().remove_timeout(
-            timeouts[client][results['batch']]
-        )
+        try:
+            ioloop.IOLoop.current().remove_timeout(
+                timeouts[client][results['batch']]
+            )
+        except AttributeError:
+            print('Server got work from a client that is not found as assigned'
+                  ' to its IP')
+            return
         # Remove timeout first
         del timeouts[client][results['batch']]
         try:
@@ -329,12 +334,43 @@ async def opendb(dbconf):
     dbpool = await asyncpg.create_pool(**dbconf)
 
 
-def try_exit():
+async def try_exit(config, configpath):
     if workdone:
         print('Work complete. Shutting down server')
         ioloop.IOLoop.current().stop()
         for conn in WorkWSHandler.wsconns:
             conn.close()
+
+        update = False
+        async with dbpool.acquire() as conn:
+            maximum = await conn.fetch(
+                'SELECT MAX(account_id), console FROM players GROUP BY console'
+            )
+            for record in maximum:
+                if record['console'] == 'xbox':
+                    max_xbox = record['max']
+                else:
+                    max_ps4 = record['max']
+
+            if 'max account' not in config['xbox']:
+                config['xbox']['max account'] = max_xbox + 200000
+                update = True
+            elif config['xbox']['max account'] - max_xbox < 50000:
+                config['xbox']['max account'] += 100000
+                update = True
+            if 'max account' not in config['ps4']:
+                config['ps4']['max account'] = max_ps4 + 200000
+                update = True
+            elif config['ps4']['max account'] - max_ps4 < 50000:
+                config['ps4']['max account'] += 100000
+                update = True
+
+            if update:
+                if 'debug' in config and config['debug']:
+                    print('Updating configuration.')
+                    print('Max Xbox account:', max_xbox)
+                    print('Max PS4 account:', max_ps4)
+                write_config(config, configpath)
 
 
 def make_app(sfiles, clientconfig):
@@ -399,11 +435,12 @@ if __name__ == '__main__':
             lambda: opendb(server_config['database']))
         app = make_app(static_files, client_config)
         app.listen(args.port)
-        exitcall = ioloop.PeriodicCallback(try_exit, 1000)
+        exitcall = ioloop.PeriodicCallback(
+            lambda: try_exit(server_config, args.config), 1000)
         exitcall.start()
         ioloop.IOLoop.current().start()
-        ioloop.IOLoop.current().run_sync(
-            lambda: expand_max_players(server_config, args.config))
+        # ioloop.IOLoop.current().run_sync(
+        #     lambda: expand_max_players(server_config, args.config))
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()

@@ -10,11 +10,11 @@ async def setup_database(db):
             account_id integer PRIMARY KEY,
             nickname varchar(34) NOT NULL,
             console varchar(4) NOT NULL,
-            created_at date NOT NULL,
-            last_battle_time date NOT NULL,
-            updated_at date NOT NULL,
+            created_at timestamp NOT NULL,
+            last_battle_time timestamp NOT NULL,
+            updated_at timestamp NOT NULL,
             battles integer NOT NULL,
-            _last_api_pull date NOT NULL)''')
+            _last_api_pull timestamp NOT NULL)''')
 
     _ = await conn.execute('''
         CREATE TABLE IF NOT EXISTS {} (
@@ -63,8 +63,15 @@ async def expand_max_players(config, filename='./config/server.json'):
     update = False
 
     conn = await asyncpg.connect(**dbconf)
-    max_box = int(await asyncpg.execute('SELECT MAX(account_id) FROM players WHERE realm = xbox'))
-    max_ps4 = int(await asyncpg.execute('SELECT MAX(account_id) FROM players WHERE realm = ps4'))
+    # max_xbox = int(await conn.execute('SELECT MAX(account_id) FROM players WHERE console = "xbox"'))
+    # max_ps4 = int(await conn.execute('SELECT MAX(account_id) FROM players
+    # WHERE console = "ps4"'))
+    maximum = await conn.fetch('SELECT MAX(account_id), console FROM players GROUP BY console')
+    for record in maximum:
+        if record['console'] == 'xbox':
+            max_xbox = record['max']
+        else:
+            max_ps4 = record['max']
 
     if 'max account' not in config['xbox']:
         config['xbox']['max account'] = max_xbox + 200000

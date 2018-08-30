@@ -1,6 +1,6 @@
 import asyncpg
 from collections import deque
-from datetime import datetime
+# from datetime import datetime
 from json.decoder import JSONDecodeError
 from os.path import join as pjoin
 from tornado import ioloop, web, websocket
@@ -22,7 +22,7 @@ registered = set()
 startwork = False
 workdone = False
 # resultqueue = None
-# dbpool = None
+dbpool = None
 
 
 def move_to_stale(ipaddress, work):
@@ -198,17 +198,6 @@ class SetupHandler(web.RequestHandler):
 class WorkWSHandler(websocket.WebSocketHandler):
     wschecks = dict()
     wsconns = set()
-    # def check_origin(self, origin):
-    #     return True
-
-    def __init__(self, *args, **kwargs):
-        dbconf = kwargs.pop('database')
-        # self.dbpool = await asyncpg.create_pool(**dbconf)
-        self.opendb(dbconf)
-        super(WorkWSHandler, self).__init__(*args, **kwargs)
-
-    async def opendb(self, dbconf):
-        self.dbpool = await asyncpg.create_pool(**dbconf)
 
     async def open(self, *args):
         client = self.request.remote_ip
@@ -263,6 +252,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
     # Make async if interfacing with database?
     async def on_message(self, message):
         global assignedworkcount
+        global dbpool
         client = self.request.remote_ip
         try:
             results = json_decode(message)
@@ -282,8 +272,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
         assignedworkcount -= 1
         # global batches_complete
         # batches_complete += 1
-        results['_last_api_pull'] = datetime.utcfromtimestamp(
-            results['_last_api_pull'])
+        # results['_last_api_pull'] = datetime.utcfromtimestamp(
+        #     results['_last_api_pull'])
         del results['batch']
         await self.send_work()
 
@@ -301,32 +291,42 @@ class WorkWSHandler(websocket.WebSocketHandler):
         # exist in our DB, this should provide the best performance.
         # Also, the results are a nested dict of {'playerid': {data}, ...}
         # so we will need to efficiently pass this to executemany
-        async with self.dbpool.acquire() as conn:
-            for __, p in results.iteritems():
+        # print(results)
+        async with dbpool.acquire() as conn:
+            for __, p in results['data'].items():
+                if p is None:
+                    continue
+                # print(p)
                 res = await conn.execute('''
                     UPDATE players SET (last_battle_time, updated_at, battles,
-                    _last_api_pull) = ($1, $2, $3, $4) WHERE account_id = $5
+                    _last_api_pull) = (to_timestamp($1), to_timestamp($2), $3,
+                    to_timestamp($4)) WHERE account_id = $5
                     ''',
                                          p['last_battle_time'],
                                          p['updated_at'],
                                          p['statistics']['all']['battles'],
-                                         p['_last_api_pull'],
+                                         results['_last_api_pull'],
                                          p['account_id'])
                 if res.split()[-1] == '0':
                     res = await conn.execute('''
                         INSERT INTO players (account_id, nickname, console,
                         created_at, last_battle_time, updated_at, battles,
                         _last_api_pull) VALUES
-                        ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ($1, $2, $3, to_timestamp($4), to_timestamp($5),
+                        to_timestamp($6), $7, to_timestamp($8))
                     ''',
                                              p['account_id'],
                                              p['nickname'],
-                                             p['console'],
+                                             results['console'],
                                              p['created_at'],
                                              p['last_battle_time'],
                                              p['updated_at'],
                                              p['statistics']['all']['battles'],
-                                             p['_last_api_pull'])
+                                             results['_last_api_pull'])
+
+async def opendb(dbconf):
+    global dbpool
+    dbpool = await asyncpg.create_pool(**dbconf)
 
 
 def try_exit():
@@ -337,7 +337,7 @@ def try_exit():
             conn.close()
 
 
-def make_app(sfiles, clientconfig, dbconf):
+def make_app(sfiles, clientconfig):
     return web.Application([
         (r"/", MainHandler),
         (r"/uuid", UUIDHandler),
@@ -345,7 +345,7 @@ def make_app(sfiles, clientconfig, dbconf):
         # (r"/updates/([^/]*)", UpdateHandler),
         (r"/updates", UpdateHandler),
         (r"/work", WorkHandler),
-        (r"/wswork", WorkWSHandler, {'database': dbconf}),
+        (r"/wswork", WorkWSHandler),
         (r"/cancel/(\d+)", CancelWorkHandler),
         (r"/status", StatusHandler),
         (r"/debug/([^/]*)", DebugHandler),
@@ -395,13 +395,15 @@ if __name__ == '__main__':
     try:
         ioloop.IOLoop.current().run_sync(
             lambda: setup_database(server_config['database']))
-        app = make_app(static_files, client_config, server_config['database'])
+        ioloop.IOLoop.current().run_sync(
+            lambda: opendb(server_config['database']))
+        app = make_app(static_files, client_config)
         app.listen(args.port)
         exitcall = ioloop.PeriodicCallback(try_exit, 1000)
         exitcall.start()
         ioloop.IOLoop.current().start()
         ioloop.IOLoop.current().run_sync(
-            lambda: expand_max_players(server_config))
+            lambda: expand_max_players(server_config, args.config))
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()

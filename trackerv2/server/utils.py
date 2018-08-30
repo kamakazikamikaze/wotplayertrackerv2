@@ -46,7 +46,7 @@ def create_client_config(filename='./config/client.json'):
             'throttle': 10,
             'server': 'http://replaceme/',
             'timeout': 5},
-            f)
+            f, indent=4)
 
 
 def create_server_config(filename='./config/server.json'):
@@ -92,7 +92,7 @@ def create_server_config(filename='./config/server.json'):
         }
     }
     with open(filename, 'w') as f:
-        dump(newconfig, f)
+        dump(newconfig, f, indent=4)
 
 
 def nested_dd():

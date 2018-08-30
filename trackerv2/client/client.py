@@ -68,7 +68,9 @@ class TrackerClientNode:
             request_timeout=self.timeout)
         # await self.send_results(work)
         # result = {'batch': work['batch']}
-        result = json_decode(response.body)['data']  # IndexError if missing
+        result = {}
+        result['data'] = json_decode(
+            response.body)['data']  # IndexError if missing
         # time.time() which is epoch (UTC). No need to create a timestamp here
         result['_last_api_pull'] = response.request.start_time
         result['batch'] = work['batch']

@@ -49,4 +49,4 @@ def load_config(filename='./config/client.json'):
 
 def write_config(config, filename='./config/client.json'):
     with open(filename, 'w') as f:
-        dump(config, f)
+        dump(config, f, indent=4)

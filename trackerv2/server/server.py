@@ -1,8 +1,13 @@
+import asyncpg
 from collections import deque
+from datetime import datetime
 from json.decoder import JSONDecodeError
 from os.path import join as pjoin
-from tornado.escape import json_decode, json_encode
 from tornado import ioloop, web, websocket
+from tornado.escape import json_decode, json_encode
+# from tornado.queues import Queue, QueueEmpty
+
+from database import setup_database, expand_max_players
 from utils import genuuid, genhashes, load_config, nested_dd
 from work import setup_work
 
@@ -16,6 +21,8 @@ registered = set()
 # batches_complete = 0
 startwork = False
 workdone = False
+# resultqueue = None
+# dbpool = None
 
 
 def move_to_stale(ipaddress, work):
@@ -80,8 +87,6 @@ class UpdateHandler(web.RequestHandler):
                 # 204 - No Content. File matches, no updates to pass along
                 self.set_status(204)
             else:
-                # with open('./files/' + client['os'] + '/' + client['filename']) as f:
-                #     self.write(f.readlines())
                 self.redirect(
                     '/files/' +
                     client['os'] +
@@ -196,15 +201,24 @@ class WorkWSHandler(websocket.WebSocketHandler):
     # def check_origin(self, origin):
     #     return True
 
-    def open(self, *args):
+    def __init__(self, *args, **kwargs):
+        dbconf = kwargs.pop('database')
+        # self.dbpool = await asyncpg.create_pool(**dbconf)
+        self.opendb(dbconf)
+        super(WorkWSHandler, self).__init__(*args, **kwargs)
+
+    async def opendb(self, dbconf):
+        self.dbpool = await asyncpg.create_pool(**dbconf)
+
+    async def open(self, *args):
         client = self.request.remote_ip
-        self.send_work()
+        await self.send_work()
         WorkWSHandler.wschecks[client] = ioloop.PeriodicCallback(
             self.send_work, 200)
         WorkWSHandler.wschecks[client].start()
         WorkWSHandler.wsconns.add(self)
 
-    def send_work(self):
+    async def send_work(self):
         global workdone
         global assignedworkcount
         if not startwork:
@@ -224,7 +238,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
                     if len(stalework) == 0 and assignedworkcount == 0:
                         workdone = True
                     return
-            self.write_message(json_encode(
+            await self.write_message(json_encode(
                 {
                     'batch': work[0],
                     'players': work[1],
@@ -246,27 +260,73 @@ class WorkWSHandler(websocket.WebSocketHandler):
         del WorkWSHandler.wschecks[client]
         WorkWSHandler.wsconns.remove(self)
 
-    def on_message(self, message):
+    # Make async if interfacing with database?
+    async def on_message(self, message):
         global assignedworkcount
         client = self.request.remote_ip
         try:
-            work = json_decode(message)
-            try:
-                # Remove timeout first
-                ioloop.IOLoop.current().remove_timeout(
-                    timeouts[client][work['batch']]
-                )
-                del timeouts[client][work['batch']]
-                del assignedwork[client][work['batch']]
-                assignedworkcount -= 1
-                # global batches_complete
-                # batches_complete += 1
-            except KeyError:
-                pass
-            self.send_work()
+            results = json_decode(message)
         except JSONDecodeError:
             # Will the clients ever send erroneous result formats?
+            return
+        ioloop.IOLoop.current().remove_timeout(
+            timeouts[client][results['batch']]
+        )
+        # Remove timeout first
+        del timeouts[client][results['batch']]
+        try:
+            del assignedwork[client][results['batch']]
+        except KeyError:
+            # work has already been moved to stale. How do we correct this?
             pass
+        assignedworkcount -= 1
+        # global batches_complete
+        # batches_complete += 1
+        results['_last_api_pull'] = datetime.utcfromtimestamp(
+            results['_last_api_pull'])
+        del results['batch']
+        await self.send_work()
+
+        # Dropping to a queue would be faster and prevent blocking future msgs
+        # resultqueue.put_nowait(result)
+
+        # Interfacing with a database here would prevent the need to have a
+        # dedicated worker that updates rows. However, we would need to be able
+        # to send data immediately and return quickly. Looping over 100 items
+        # per message may cause the server to hang, plus the method would need
+        # to be made async.
+        # TODO: Asynchronously update database. asyncpg?
+        # If UPDATE is followed by a 0, the player does not already exist.
+        # We will then insert them. Since 99.9% of players should already
+        # exist in our DB, this should provide the best performance.
+        # Also, the results are a nested dict of {'playerid': {data}, ...}
+        # so we will need to efficiently pass this to executemany
+        async with self.dbpool.acquire() as conn:
+            for __, p in results.iteritems():
+                res = await conn.execute('''
+                    UPDATE players SET (last_battle_time, updated_at, battles,
+                    _last_api_pull) = ($1, $2, $3, $4) WHERE account_id = $5
+                    ''',
+                                         p['last_battle_time'],
+                                         p['updated_at'],
+                                         p['statistics']['all']['battles'],
+                                         p['_last_api_pull'],
+                                         p['account_id'])
+                if res.split()[-1] == '0':
+                    res = await conn.execute('''
+                        INSERT INTO players (account_id, nickname, console,
+                        created_at, last_battle_time, updated_at, battles,
+                        _last_api_pull) VALUES
+                        ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ''',
+                                             p['account_id'],
+                                             p['nickname'],
+                                             p['console'],
+                                             p['created_at'],
+                                             p['last_battle_time'],
+                                             p['updated_at'],
+                                             p['statistics']['all']['battles'],
+                                             p['_last_api_pull'])
 
 
 def try_exit():
@@ -277,7 +337,7 @@ def try_exit():
             conn.close()
 
 
-def make_app(sfiles, clientconfig):
+def make_app(sfiles, clientconfig, dbconf):
     return web.Application([
         (r"/", MainHandler),
         (r"/uuid", UUIDHandler),
@@ -285,7 +345,7 @@ def make_app(sfiles, clientconfig):
         # (r"/updates/([^/]*)", UpdateHandler),
         (r"/updates", UpdateHandler),
         (r"/work", WorkHandler),
-        (r"/wswork", WorkWSHandler),
+        (r"/wswork", WorkWSHandler, {'database': dbconf}),
         (r"/cancel/(\d+)", CancelWorkHandler),
         (r"/status", StatusHandler),
         (r"/debug/([^/]*)", DebugHandler),
@@ -314,10 +374,12 @@ if __name__ == '__main__':
         help='Server configuration file to use',
         default='./config/server.json')
     args = agp.parse_args()
+
     # Reassign arguments
     static_files = args.static_files
     server_config = load_config(args.config)
     client_config = load_config(args.client_config)
+
     # Setup server
     workgenerator = setup_work(server_config)
     assignedwork = nested_dd()
@@ -325,15 +387,21 @@ if __name__ == '__main__':
     stalework = deque()
     hashes = genhashes(static_files)
     client_config['files'] = list(hashes['win'].keys())
+    # resultqueue = Queue()
+    # dbpool = asyncpg.create_pool(**server_config['database']['server'])
     # TODO: Create a timer to change startwork
     startwork = True
 
     try:
-        app = make_app(static_files, client_config)
+        ioloop.IOLoop.current().run_sync(
+            lambda: setup_database(server_config['database']))
+        app = make_app(static_files, client_config, server_config['database'])
         app.listen(args.port)
         exitcall = ioloop.PeriodicCallback(try_exit, 1000)
         exitcall.start()
         ioloop.IOLoop.current().start()
+        ioloop.IOLoop.current().run_sync(
+            lambda: expand_max_players(server_config))
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()

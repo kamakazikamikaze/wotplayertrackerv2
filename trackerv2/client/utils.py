@@ -1,9 +1,21 @@
+from hashlib import sha1
 from json import load, dump
 # from multiprocessing import BoundedSemaphore
 from threading import Timer
 # from threading import _BoundedSemaphore as BoundedSemaphore, Timer
 from time import sleep
 from tornado.locks import BoundedSemaphore
+
+
+def getsha1(filename, buffer_size=65536):
+    sha1hash = sha1()
+    with open(filename, 'rb') as f:
+        while True:
+            data = f.read(buffer_size)
+            if not data:
+                break
+            sha1hash.update(data)
+    return sha1hash.hexdigest()
 
 
 # https://stackoverflow.com/a/16686329/1993468

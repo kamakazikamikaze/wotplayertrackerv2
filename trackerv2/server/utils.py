@@ -33,6 +33,7 @@ def genhashes(dirpath='./files'):
                     hashes[d][fi] = getsha1(pjoin(dirpath, d, fi))
     return hashes
 
+
 def load_config(filename='./config/server.json'):
     with open(filename) as f:
         return load(f)
@@ -40,7 +41,12 @@ def load_config(filename='./config/server.json'):
 
 def create_client_config(filename='./config/client.json'):
     with open(filename, 'w') as f:
-        dump({'application_id': 'replaceme', 'max tasks': 15}, f)
+        dump({
+            'application_id': 'replaceme',
+            'throttle': 10,
+            'server': 'http://replaceme/',
+            'timeout': 5},
+            f)
 
 
 def create_server_config(filename='./config/server.json'):
@@ -63,11 +69,11 @@ def create_server_config(filename='./config/server.json'):
             'errors': 'logs/error-%Y_%m_%d'
         },
         'database': {
-            'protocol': 'mysql',
             'user': 'root',
             'password': 'password',
-            'address': 'localhost',
-            'name': 'battletracker'
+            'host': 'localhost',
+            'port': 5432,
+            'database': 'battletracker'
         },
         'elasticsearch': {
             'clusters': {
@@ -87,6 +93,7 @@ def create_server_config(filename='./config/server.json'):
     }
     with open(filename, 'w') as f:
         dump(newconfig, f)
+
 
 def nested_dd():
     return defaultdict(nested_dd)

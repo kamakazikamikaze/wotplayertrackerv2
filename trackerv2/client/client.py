@@ -1,13 +1,11 @@
-from platform import system
 from tornado import ioloop
 from tornado.escape import json_decode, json_encode
-from tornado.httpclient import AsyncHTTPClient, HTTPClient, HTTPRequest
+from tornado.httpclient import AsyncHTTPClient  # , HTTPRequest
+from tornado.httputil import url_concat
 from tornado.queues import Queue, QueueEmpty
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
-from utils import load_config, write_config
-# TODO: Add async capability to wotconsole, limiting to Python 3.5+, using
-# aiohttp
+from utils import load_config  # , write_config
 # from wotconsole import player_data, WOTXResponseError
 
 workdone = False
@@ -18,14 +16,25 @@ class TrackerClientNode:
     # solution for clients with multiple public IP addresses, which is
     # unlikely, we'll bind this to the class to share the work queue
     workqueue = Queue()
+    data_fields = (
+        'created_at',
+        'account_id',
+        'last_battle_time',
+        'nickname',
+        'updated_at',
+        'statistics.all.battles'
+    )
+    api_url = 'https://api-{}-console.worldoftanks.com/wotx/'
 
     def __init__(self, config):
         self.server = config['server']
-        self.throttle = config['throttle']
+        self.throttle = 10 if 'throttle' not in config else config['throttle']
         self.key = config['application_id']
-        self.debug = config['debug']
+        self.debug = False if 'debug' not in config else config['debug']
+        self.timeout = 5 if 'timeout' not in config else config['timeout']
         self.schedule = ioloop.PeriodicCallback(
             self.query, 1000 // self.throttle)
+        self.http_client = AsyncHTTPClient()
 
     def on_message(self, message):
         if message is not None:
@@ -43,10 +52,27 @@ class TrackerClientNode:
             work = TrackerClientNode.workqueue.get_nowait()
         except QueueEmpty:
             return
-        # Debugging for now. Print out incoming work
-        print('Prcoessed batch:', work['batch'])
+        params = {
+            'account_id': ','.join(map(str, work['players'])),
+            'application_id': self.key,
+            'fields': ','.join(map(str, TrackerClientNode.data_fields)),
+            'language': 'en'
+        }
+        # TODO: Handle API errors
+        url = url_concat(
+            TrackerClientNode.api_url.format(work['realm']) + 'account/info/',
+            params)
+        # req = HTTPRequest(url, 'GET')
+        response = await self.http_client.fetch(
+            url,
+            request_timeout=self.timeout)
         # await self.send_results(work)
-        result = {'batch': work['batch']}
+        # result = {'batch': work['batch']}
+        result = json_decode(response.body)['data']  # IndexError if missing
+        # time.time() which is epoch (UTC). No need to create a timestamp here
+        result['_last_api_pull'] = response.request.start_time
+        result['batch'] = work['batch']
+        result['console'] = work['realm']
         await self.conn.write_message(json_encode(result))
 
     # async def send_results(self, result):
@@ -70,41 +96,8 @@ class TrackerClientNode:
     def stop(self):
         self.schedule.stop()
 
-    def __del__(self):
-        self.schedule.stop()
-
-
-def download_file():
-    pass
-
-
-def setup(config, configfile):
-    http_client = HTTPClient()
-    async_http_client = AsyncHTTPClient()
-    newconfig = json_decode(
-        http_client.fetch(
-            urljoin(
-                config['server'],
-                'setup')))
-    if system() == 'Windows':
-        plat = 'win'
-    else:
-        plat = 'nix'
-    for filename in newwconfig['files']:
-        # Get hash
-        # Send hash in request
-        pass
-    del newconfig['files']
-    write_config(configfile, newconfig)
-    config = newconfig
-    http_client.fetch(
-        HTTPRequest(
-            urljoin(
-                config['server'],
-                'setup'),
-            'POST',
-            allow_nonstandard_methods=True))
-    return config
+    # def __del__(self):
+    #     self.schedule.stop()
 
 
 def try_exit():
@@ -127,10 +120,8 @@ if __name__ == '__main__':
         help='Client configuration file to use',
         default='./config/client.json')
     args = agp.parse_args()
-    config = load_config(args.config)
-
     try:
-        config = setup(config, args.config)
+        config = load_config(args.config)
         client = TrackerClientNode(config)
         # client.connect()
         ioloop.IOLoop.current().run_sync(client.connect)

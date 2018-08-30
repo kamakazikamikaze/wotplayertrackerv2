@@ -1,120 +1,71 @@
+import asyncpg
 from datetime import datetime
 import json
-from sqlalchemy import Column, create_engine, event, func, DateTime, DDL
-from sqlalchemy import ForeignKey, Integer, String
-# from _mysql_exceptions import OperationalError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
-Base = declarative_base()
 
 
-class Player(Base):
-    __tablename__ = 'players'
+async def setup_database(db):
+    conn = await asyncpg.connect(**db)
+    _ = await conn.execute('''
+        CREATE TABLE IF NOT EXISTS players (
+            account_id integer PRIMARY KEY,
+            nickname varchar(34) NOT NULL,
+            console varchar(4) NOT NULL,
+            created_at date NOT NULL,
+            last_battle_time date NOT NULL,
+            updated_at date NOT NULL,
+            battles integer NOT NULL,
+            _last_api_pull date NOT NULL)''')
 
-    account_id = Column(Integer, primary_key=True)
-    # Biggest I've seen is 26 thanks to the "_old_######" accounts
-    nickname = Column(String(34), nullable=False)
-    console = Column(String(4), nullable=False)
-    created_at = Column(DateTime, nullable=False)
-    last_battle_time = Column(DateTime, nullable=False)
-    updated_at = Column(DateTime, nullable=False)
-    battles = Column(Integer, nullable=False)
-    _last_api_pull = Column(DateTime, nullable=False)
+    _ = await conn.execute('''
+        CREATE TABLE IF NOT EXISTS {} (
+        account_id integer PRIMARY KEY REFERENCES players (account_id),
+        battles integer NOT NULL)'''.format(datetime.utcnow().strftime('total_battles_%Y_%m_%d')))
 
-    def __repr__(self):
-        return "<Player(account_id={}, nickname='{}', console='{}', battles={})>".format(
-            self.account_id,
-            self.nickname,
-            self.console,
-            self.battles
-        )
+    _ = await conn.execute('''
+        CREATE TABLE IF NOT EXISTS {} (
+        account_id integer PRIMARY KEY REFERENCES players (account_id),
+        battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
 
+    try:
+        _ = await conn.execute('''
+            CREATE OR REPLACE FUNCTION update_total()
+              RETURNS trigger AS
+            $func$
+            BEGIN
+               IF (OLD.battles < NEW.battles) THEN
+                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+               END IF;
+               RETURN NEW;
+            END
+            $func$ LANGUAGE plpgsql;
+            CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();''')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
 
-class Diff_Battles(Base):
-    __tablename__ = datetime.utcnow().strftime('diff_battles_%Y_%m_%d')
-
-    account_id = Column(
-        Integer,
-        ForeignKey('players.account_id'),
-        primary_key=True)
-    battles = Column(Integer, nullable=False)
-
-    def __repr__(self):
-        return "<Diff Battles(account_id={}, battles={})>".format(
-            self.account_id, self.battles)
-
-
-class Total_Battles(Base):
-    __tablename__ = datetime.utcnow().strftime('total_battles_%Y_%m_%d')
-
-    account_id = Column(
-        Integer,
-        ForeignKey('players.account_id'),
-        primary_key=True)
-    battles = Column(Integer, nullable=False)
-
-    def __repr__(self):
-        return "<Total Battles(account_id={}, battles={})>".format(
-            self.account_id, self.battles)
-
-
-def setup_trigger(db):
-    r"""
-    When player battle values are updated, create new records in today's
-    diff_battle table
-    """
-    engine = create_engine(
-        "{protocol}://{user}:{password}@{address}/{name}".format(**db),
-        echo=False)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    battle_ddl = DDL("""
-        CREATE TRIGGER update_battles BEFORE UPDATE ON players
-        FOR EACH ROW
-        BEGIN
-            IF (OLD.battles < NEW.battles) THEN
-                INSERT INTO {} VALUES (NEW.account_id, NEW.battles);
-                INSERT INTO {} VALUES (NEW.account_id, NEW.battles - OLD.battles);
-            END IF;
-        END
-    """.format(Total_Battles.__tablename__, Diff_Battles.__tablename__))
-    event.listen(
-        Player.__table__,
-        'after_create',
-        battle_ddl.execute_if(
-            dialect='mysql'))
-    newplayer_ddl = DDL("""
-        CREATE TRIGGER new_player AFTER INSERT ON players
-        FOR EACH ROW INSERT INTO {} VALUES (NEW.account_id, NEW.battles);
-    """.format(Total_Battles.__tablename__))
-    event.listen(
-        Player.__table__,
-        'after_create',
-        newplayer_ddl.execute_if(
-            dialect='mysql'))
-    Base.metadata.create_all(engine)
-    session.execute("""
-        DROP TRIGGER IF EXISTS new_player;
-        DROP TRIGGER IF EXISTS update_battles;
-    """)
-    session.execute(battle_ddl)
-    session.execute(newplayer_ddl)
-    session.commit()
+    try:
+        _ = await conn.execute('''
+            CREATE OR REPLACE FUNCTION new_player()
+              RETURNS trigger AS
+            $func$
+            BEGIN
+              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              RETURN NEW;
+            END
+            $func$ LANGUAGE plpgsql;
+            CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();''')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
 
 
-def expand_max_players(config, filename='./config/server.json'):
+async def expand_max_players(config, filename='./config/server.json'):
     dbconf = config['database']
     update = False
-    engine = create_engine(
-        "{protocol}://{user}:{password}@{address}/{name}".format(**dbconf),
-        echo=False)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    max_xbox = int(session.query(Player, func.max(Player.account_id)
-                                 ).filter(Player.console == 'xbox').one()[1])
-    max_ps4 = int(session.query(Player, func.max(Player.account_id)
-                                ).filter(Player.console == 'ps4').one()[1])
+
+    conn = await asyncpg.connect(**dbconf)
+    max_box = int(await asyncpg.execute('SELECT MAX(account_id) FROM players WHERE realm = xbox'))
+    max_ps4 = int(await asyncpg.execute('SELECT MAX(account_id) FROM players WHERE realm = ps4'))
+
     if 'max account' not in config['xbox']:
         config['xbox']['max account'] = max_xbox + 200000
         update = True

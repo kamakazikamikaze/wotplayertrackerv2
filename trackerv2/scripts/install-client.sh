@@ -56,7 +56,7 @@ mkdir -p $homedir/python
 pushd $homedir/python
 if [ ! -e ./Python-$pyversion.tgz ] || [ "$($shacmd ./Python-$pyversion.tgz)" != "$pysha" ]
 then
-	wget $pyurl -O
+	wget $pyurl
 fi
 tar xzf Python-$pyversion.tgz
 find $homedir/python -type d | xargs chmod 0755
@@ -77,7 +77,7 @@ sudo -u $username $homedir/python/bin/pyvenv $homedir/wottracker
 
 ## Install modules
 cd ..
-wget --no-check-certificate https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/client-requirements.txt -O
+wget --no-check-certificate https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/client-requirements.txt
 chown $username:$group client-requirements.txt
 sudo -u $username $homedir/python/bin/pip3 install -r client-requirements.txt
 

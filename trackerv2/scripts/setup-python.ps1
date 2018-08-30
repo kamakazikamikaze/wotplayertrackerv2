@@ -8,12 +8,12 @@ $PythonExists = $false
 $NodePath = $env:Path.Split(";")
 $NodePath | ForEach-Object { if ($_.Contains("Python")){ $PythonExists = $true; Write-Debug "Python is already installed"; break }}
 if (-not $PythonExists){
-    $PyVersion = "3.6.5" # 3.7.0 is still beta
+    $PyVersion = "3.7.0"
     $PyInstaller = "python-$PyVersion-amd64.exe"
     #$ChkAlgo = "MD5"
     #$PyChecksum = "9E96C934F5D16399F860812B4AC7002B"
     $ChkAlgo = "SHA1"
-    $PyChecksum = "453A4445A3DC8F295F637CAD51B69D233D4089BA"
+    $PyChecksum = "FE8A2F2B59DB38073AD2F8EBC3372841830CD2DB"
     if (![System.IO.File]::Exists("$TempDir\$PyInstaller") -or (Get-FileHash $TempDir\$PyInstaller -Algorithm $ChkAlgo).Hash -ne $PyChecksum){
         Write-Output "Downloading Python version $PyVersion"
         Invoke-WebRequest https://www.python.org/ftp/python/$PyVersion/$PyInstaller -OutFile $TempDir\$PyInstaller -ErrorAction Stop
@@ -38,8 +38,8 @@ source wottracker\bin\
 Invoke-WebRequest https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/requirements.txt -OutFile requirements.txt
 pip install -r requirements.txt
 
-## Download tracker node files
-Invoke-WebRequest https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/trackerv2/client/node.py -OutFile node.py
+## Download tracker node update file
+Invoke-WebRequest https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/trackerv2/client/node.py -OutFile update.py
 
 # Return to original location
 Pop-Location

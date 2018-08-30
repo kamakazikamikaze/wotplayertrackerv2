@@ -22,7 +22,7 @@ $HomeDir = "$env:SystemDrive\Users\$NodeAccount"
 $PathOutFile = "wotnodepath.txt"
 $TempDir = "$env:SystemDrive\TEMP"
 $TaskName = "TrackerNode-Run"
-$TaskDescription = "WoT Tracker Node Daily Task"
+$TaskDescription = "WoT Tracker Client Daily Run"
 
 if (Get-WmiObject Win32_UserAccount -Filter "LocalAccount='true' and Name='$NodeAccount'"){
     Write-Error "$NodeAccount already exists on the system. Please run uninstall-client.bat and retry"
@@ -59,26 +59,23 @@ Write-Output "Setting up Python and files"
 $Process1 = Start-Process $PSHOME\powershell.exe -WorkingDirectory $PSHome -Credential $NodeCred -ArgumentList "-command $ScriptDir\setup-python.ps1" -Wait -NoNewWindow
 
 ## Add scheduler task for running node
-$TaskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -windowStyle Hidden -command "python node.py"' -WorkingDirectory "$HomeDir"
-$TaskTime = [String]((([System.TimeZoneInfo]::Local).BaseUtcOffset.Hours + 23) % 24) + ":45"
+# Updates are to be fetched prior to running the client
+$TaskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -windowStyle Hidden -command "python update.py client.json; python client.py client.json"' -WorkingDirectory "$HomeDir"
+$TaskTime = [String]((([System.TimeZoneInfo]::Local).BaseUtcOffset.Hours + 24) % 24) + ":00"
 $TaskTrigger = New-ScheduledTaskTrigger -Daily -At $TaskTime
-#Register-ScheduledTask -Action $TaskAction -Trigger $TaskTrigger -TaskName $TaskName -Description $TaskDescription -User $NodeAccount -Password $Password -AsJob -TaskPath $TaskPath
-$NodeTask = Register-ScheduledTask -Action $TaskAction -Trigger $TaskTrigger -TaskName $TaskName -Description $TaskDescription -User $NodeAccount -Password $Password
-#$TaskPrincipal = New-ScheduledTaskPrincipal -UserId "$Hostname\$NodeAccount" -LogonType S4U
-#Register-ScheduledTask -Action $TaskAction -Trigger $TaskTrigger -TaskName $TaskName -Description $TaskDescription -AsJob -TaskPath $TaskPath -Principal $TaskPrincipal
+$Task = Register-ScheduledTask -Action $TaskAction -Trigger $TaskTrigger -TaskName $TaskName -Description $TaskDescription -User $NodeAccount -Password $Password
 
 ## Add Firewall exception
 
-## Output installation summary to .ini or .json file somewhere
-# There's no need for this anymore
 
-#$jsonResults = [pscustomobject]@{
-#    username = $NodeAccount
-#    python = $false
-#    home = $HomeDir
-#}
+## Create initial json needed to connect to server
+$jsonClient = [pscustomobject]@{
+    server = "http://changeme/"
+    application_id = "demo"
+    throttle = 10
+    debug = False
+}
 
-#Write-Debug "Saving summary to JSON file"
-#$jsonResults | ConvertTo-Json -Depth 10 | Out-File "installresults.json"
+$jsonClient | ConvertTo-Json -Depth 10 | Out-File $HomeDir\client.json
 
 Write-Output "Setup is complete!"

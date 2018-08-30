@@ -11,6 +11,7 @@ $TaskName = "TrackerNode-Run"
 # Skipping. If installed locally, it will be within the user folder and removed later in the script anyways
 
 ## Delete scheduler task for running node
+Write-Output "Removing scheduled task"
 Unregister-ScheduledTask $TaskName -Confirm:$false
 
 ## Delete Firewall exception

@@ -1,14 +1,16 @@
 import asyncpg
 from collections import deque
-# from datetime import datetime
+from datetime import datetime
 from json.decoder import JSONDecodeError
 from os.path import join as pjoin
+from sys import exit
 from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
 # from tornado.queues import Queue, QueueEmpty
 
 from database import setup_database
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
+from utils import create_client_config, create_server_config
 from work import setup_work
 
 workgenerator = None
@@ -249,7 +251,6 @@ class WorkWSHandler(websocket.WebSocketHandler):
         del WorkWSHandler.wschecks[client]
         WorkWSHandler.wsconns.remove(self)
 
-    # Make async if interfacing with database?
     async def on_message(self, message):
         global assignedworkcount
         global dbpool
@@ -279,7 +280,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
         # batches_complete += 1
         # results['_last_api_pull'] = datetime.utcfromtimestamp(
         #     results['_last_api_pull'])
-        del results['batch']
+        # del results['batch']
         await self.send_work()
 
         # Dropping to a queue would be faster and prevent blocking future msgs
@@ -290,44 +291,47 @@ class WorkWSHandler(websocket.WebSocketHandler):
         # to send data immediately and return quickly. Looping over 100 items
         # per message may cause the server to hang, plus the method would need
         # to be made async.
-        # TODO: Asynchronously update database. asyncpg?
-        # If UPDATE is followed by a 0, the player does not already exist.
-        # We will then insert them. Since 99.9% of players should already
-        # exist in our DB, this should provide the best performance.
-        # Also, the results are a nested dict of {'playerid': {data}, ...}
-        # so we will need to efficiently pass this to executemany
-        # print(results)
-        async with dbpool.acquire() as conn:
-            for __, p in results['data'].items():
-                if p is None:
-                    continue
-                # print(p)
+
+        ioloop.IOLoop.current().add_callback(send_to_database, results)
+
+async def send_to_database(results):
+    # If UPDATE is followed by a 0, the player does not already exist.
+    # We will then insert them. Since 99.9% of players should already
+    # exist in our DB, this should provide the best performance.
+    # Also, the results are a nested dict of {'playerid': {data}, ...}
+    # so we will need to efficiently pass this to executemany
+    # print(results)
+    async with dbpool.acquire() as conn:
+        for __, p in results['data'].items():
+            if p is None:
+                continue
+            # print(p)
+            res = await conn.execute('''
+                UPDATE players SET (last_battle_time, updated_at, battles,
+                _last_api_pull) = (to_timestamp($1), to_timestamp($2), $3,
+                to_timestamp($4)) WHERE account_id = $5
+                ''',
+                                     p['last_battle_time'],
+                                     p['updated_at'],
+                                     p['statistics']['all']['battles'],
+                                     results['_last_api_pull'],
+                                     p['account_id'])
+            if res.split()[-1] == '0':
                 res = await conn.execute('''
-                    UPDATE players SET (last_battle_time, updated_at, battles,
-                    _last_api_pull) = (to_timestamp($1), to_timestamp($2), $3,
-                    to_timestamp($4)) WHERE account_id = $5
-                    ''',
+                    INSERT INTO players (account_id, nickname, console,
+                    created_at, last_battle_time, updated_at, battles,
+                    _last_api_pull) VALUES
+                    ($1, $2, $3, to_timestamp($4), to_timestamp($5),
+                    to_timestamp($6), $7, to_timestamp($8))
+                ''',
+                                         p['account_id'],
+                                         p['nickname'],
+                                         results['console'],
+                                         p['created_at'],
                                          p['last_battle_time'],
                                          p['updated_at'],
                                          p['statistics']['all']['battles'],
-                                         results['_last_api_pull'],
-                                         p['account_id'])
-                if res.split()[-1] == '0':
-                    res = await conn.execute('''
-                        INSERT INTO players (account_id, nickname, console,
-                        created_at, last_battle_time, updated_at, battles,
-                        _last_api_pull) VALUES
-                        ($1, $2, $3, to_timestamp($4), to_timestamp($5),
-                        to_timestamp($6), $7, to_timestamp($8))
-                    ''',
-                                             p['account_id'],
-                                             p['nickname'],
-                                             results['console'],
-                                             p['created_at'],
-                                             p['last_battle_time'],
-                                             p['updated_at'],
-                                             p['statistics']['all']['battles'],
-                                             results['_last_api_pull'])
+                                         results['_last_api_pull'])
 
 async def opendb(dbconf):
     global dbpool
@@ -336,11 +340,9 @@ async def opendb(dbconf):
 
 async def try_exit(config, configpath):
     if workdone:
-        print('Work complete. Shutting down server')
-        ioloop.IOLoop.current().stop()
-        for conn in WorkWSHandler.wsconns:
-            conn.close()
+        print('Work complete')
 
+        print('Checking for player expansion')
         update = False
         async with dbpool.acquire() as conn:
             maximum = await conn.fetch(
@@ -365,12 +367,18 @@ async def try_exit(config, configpath):
                 config['ps4']['max account'] += 100000
                 update = True
 
+            print('Checking database to expand players')
             if update:
                 if 'debug' in config and config['debug']:
                     print('Updating configuration.')
                     print('Max Xbox account:', max_xbox)
                     print('Max PS4 account:', max_ps4)
                 write_config(config, configpath)
+
+        print('Shutting down server')
+        ioloop.IOLoop.current().stop()
+        for conn in WorkWSHandler.wsconns:
+            conn.close()
 
 
 def make_app(sfiles, clientconfig):
@@ -409,7 +417,18 @@ if __name__ == '__main__':
         'config',
         help='Server configuration file to use',
         default='./config/server.json')
+    agp.add_argument(
+        '-g',
+        '--generate-config',
+        help='Generate first-time configuration',
+        default=False,
+        action='store_true')
     args = agp.parse_args()
+
+    if args.generate_config:
+        create_client_config(args.client_config)
+        create_server_config(args.config)
+        exit()
 
     # Reassign arguments
     static_files = args.static_files
@@ -429,6 +448,7 @@ if __name__ == '__main__':
     startwork = True
 
     try:
+        start = datetime.now()
         ioloop.IOLoop.current().run_sync(
             lambda: setup_database(server_config['database']))
         ioloop.IOLoop.current().run_sync(
@@ -441,6 +461,9 @@ if __name__ == '__main__':
         ioloop.IOLoop.current().start()
         # ioloop.IOLoop.current().run_sync(
         #     lambda: expand_max_players(server_config, args.config))
+        end = datetime.now()
+        print('Finished at', end)
+        print('Total runtime:', end - start)
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()

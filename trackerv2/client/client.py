@@ -1,10 +1,16 @@
+from datetime import datetime
+import logging
+from os import mkdir
+from os.path import exists
 from tornado import ioloop
 from tornado.escape import json_decode, json_encode
 from tornado.httpclient import AsyncHTTPClient  # , HTTPRequest
 from tornado.httputil import url_concat
 from tornado.queues import Queue, QueueEmpty
+from tornado.simple_httpclient import HTTPTimeoutError
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
+
 from utils import load_config  # , write_config
 # from wotconsole import player_data, WOTXResponseError
 
@@ -34,11 +40,37 @@ class TrackerClientNode:
         self.timeout = 5 if 'timeout' not in config else config['timeout']
         self.schedule = ioloop.PeriodicCallback(
             self.query, 1000 // self.throttle)
-        self.http_client = AsyncHTTPClient()
+        self.http_client = AsyncHTTPClient(max_clients=self.throttle)
+        self._setupLogging()
+
+    def _setupLogging(self):
+        if not exists('log'):
+            mkdir('log')
+        self.log = logging.getLogger('Client')
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
+            datefmt='%m-%d %H:%M:%S')
+        if self.debug:
+            # self.log.propagate = True
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.WARNING)
+            ch.setFormatter(formatter)
+            fh = logging.FileHandler(
+                datetime.now().strftime('log/client_%Y_%m_%d.log'))
+            fh.setLevel(logging.DEBUG)
+            ch.setLevel(logging.DEBUG)
+            fh.setFormatter(formatter)
+            self.log.addHandler(fh)
+            self.log.addHandler(ch)
+        else:
+            nu = logging.NullHandler()
+            self.log.addHandler(nu)
+        self.log.setLevel(logging.DEBUG if self.debug else logging.INFO)
 
     def on_message(self, message):
         if message is not None:
             TrackerClientNode.workqueue.put_nowait(json_decode(message))
+            self.log.debug('Got work from server')
         else:
             global workdone
             self.stop()
@@ -51,23 +83,33 @@ class TrackerClientNode:
             # We don't want a huge backlog of query calls...
             work = TrackerClientNode.workqueue.get_nowait()
         except QueueEmpty:
+            self.log.debug('Empty queue')
             return
+        self.log.debug('Batch %i: Starting', work['batch'])
+        start = datetime.now()
         params = {
             'account_id': ','.join(map(str, work['players'])),
             'application_id': self.key,
             'fields': ','.join(map(str, TrackerClientNode.data_fields)),
             'language': 'en'
         }
-        # TODO: Handle API errors
         url = url_concat(
             TrackerClientNode.api_url.format(work['realm']) + 'account/info/',
             params)
-        # req = HTTPRequest(url, 'GET')
-        response = await self.http_client.fetch(
-            url,
-            request_timeout=self.timeout)
+        try:
+            self.log.debug('Batch %i: Querying API', work['batch'])
+            response = await self.http_client.fetch(
+                url,
+                request_timeout=self.timeout)
+        except HTTPTimeoutError:
+            TrackerClientNode.workqueue.put_nowait(work)
+            self.log.warning('Batch %i: Timeout reached', work['batch'])
         # await self.send_results(work)
         # result = {'batch': work['batch']}
+        self.log.debug(
+            'Batch %i: %f seconds to complete request',
+            work['batch'],
+            response.request_time)
         result = {}
         try:
             result['data'] = json_decode(response.body)['data']
@@ -77,11 +119,20 @@ class TrackerClientNode:
             result['batch'] = work['batch']
             result['console'] = work['realm']
             await self.conn.write_message(json_encode(result))
+            end = datetime.now()
+            self.log.debug(
+                'Batch %i: %f seconds of runtime',
+                work['batch'],
+                (end - start).total_seconds())
         except ValueError:
-            print(
-                'Batch {}: ERROR : No data for '.format(
-                    work['batch']), json_decode(
+            self.log.error(
+                'Batch %i: No data for %s',
+                work['batch'],
+                json_decode(
                     response.body))
+        except KeyError:
+            # print('Batch {}: ERROR :'.format(work['batch']), response.body)
+            self.log.error('Batch %i: %s', work['batch'], response.body)
 
     # async def send_results(self, result):
     #     # Don't block messages to server

@@ -41,7 +41,7 @@ def load_config(filename='./config/server.json'):
 
 def write_config(config, filename='./config/server.json'):
     with open(filename, 'w') as f:
-        dump(config, f)
+        dump(config, f, indent=4)
 
 
 def create_client_config(filename='./config/client.json'):
@@ -59,11 +59,11 @@ def create_server_config(filename='./config/server.json'):
         'language': 'en',
         'xbox': {
             'start account': 5000,
-            'max account': 13325000
+            'max account': 14000000
         },
         'ps4': {
             'start account': 1073740000,
-            'max account': 1080500000
+            'max account': 1082000000
         },
         'max retries': 5,
         'timeout': 15,

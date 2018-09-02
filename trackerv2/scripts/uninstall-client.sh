@@ -32,9 +32,8 @@ if [[ $(uname -s) = "Darwin"* ]]; then
 
 else
 	## Variables
-	username=wotnode
 	homedir=$(grep $username /etc/passwd | cut -d: -f6)
-	cronfile=/etc/cron.d/wottracker
+	cronfile=/etc/cron.d/$username
 
 	## Remove user
 	userdel wotnode

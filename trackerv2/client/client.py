@@ -34,6 +34,8 @@ class TrackerClientNode:
 
     def __init__(self, config):
         self.server = config['server']
+        self.ssl = config['use ssl']
+        self.endpoint = config['ws endpoint']
         self.throttle = 10 if 'throttle' not in config else config['throttle']
         self.key = config['application_id']
         self.debug = False if 'debug' not in config else config['debug']
@@ -79,8 +81,6 @@ class TrackerClientNode:
 
     async def query(self):
         try:
-            # Don't use .get() here, as the client may connect minutes early.
-            # We don't want a huge backlog of query calls...
             work = TrackerClientNode.workqueue.get_nowait()
         except QueueEmpty:
             self.log.debug('Empty queue')
@@ -104,8 +104,6 @@ class TrackerClientNode:
         except HTTPTimeoutError:
             TrackerClientNode.workqueue.put_nowait(work)
             self.log.warning('Batch %i: Timeout reached', work['batch'])
-        # await self.send_results(work)
-        # result = {'batch': work['batch']}
         self.log.debug(
             'Batch %i: %f seconds to complete request',
             work['batch'],
@@ -113,8 +111,6 @@ class TrackerClientNode:
         result = {}
         try:
             result['data'] = json_decode(response.body)['data']
-            # time.time() which is epoch (UTC). No need to create a timestamp
-            # here
             result['_last_api_pull'] = response.request.start_time
             result['batch'] = work['batch']
             result['console'] = work['realm']
@@ -134,29 +130,18 @@ class TrackerClientNode:
             # print('Batch {}: ERROR :'.format(work['batch']), response.body)
             self.log.error('Batch %i: %s', work['batch'], response.body)
 
-    # async def send_results(self, result):
-    #     # Don't block messages to server
-    #     await self.conn.write_message(json_encode(result))
-
     async def connect(self):
+        wsproto = 'ws' if not self.ssl else 'wss'
         self.conn = await websocket_connect(
-            urljoin(self.server.replace('http', 'ws'), 'wswork'),
+            urljoin(self.server.replace('http', wsproto), self.endpoint),
             on_message_callback=self.on_message
         )
 
     def start(self):
-        # Query the API no more than $throttle times per second
         self.schedule.start()
-        # This may have undesirable effects if imported into a different
-        # project scope. We'll have implicit IOLoop calls outside the class
-        # for safety.
-        # ioloop.IOLoop.current().start()
 
     def stop(self):
         self.schedule.stop()
-
-    # def __del__(self):
-    #     self.schedule.stop()
 
 
 def try_exit():
@@ -167,13 +152,6 @@ def try_exit():
 if __name__ == '__main__':
     from argparse import ArgumentParser
     agp = ArgumentParser()
-    # TODO: Handle REST loop
-    # agp.add_argument(
-    #     '-r',
-    #     '--restful',
-    #     help='Use REST API instead of websockets',
-    #     default=False,
-    #     action='store_true')
     agp.add_argument(
         'config',
         help='Client configuration file to use',
@@ -182,7 +160,6 @@ if __name__ == '__main__':
     try:
         config = load_config(args.config)
         client = TrackerClientNode(config)
-        # client.connect()
         ioloop.IOLoop.current().run_sync(client.connect)
         client.start()
         exitcall = ioloop.PeriodicCallback(try_exit, 1000)

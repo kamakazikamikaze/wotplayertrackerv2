@@ -5,8 +5,25 @@ if [ "$EUID" -ne 0 ]
 	exit
 fi
 
+if [ $# -ne 1 ]
+then
+	echo "Usage: $0 {server|client}"
+	exit 1
+fi
+
+## Exit on errors
+set -e
+
 ## Global variables
-username=wotnode
+uninstalling=$(echo $1 | tr '[:upper:]' '[:lower:]')
+
+if [ $installing != "server" ] && [ $installing != "client" ]
+then
+	echo "Usage: $0 {server|client}"
+	exit 1
+fi
+
+username=wot$uninstalling
 
 if [[ $(uname -s) = "Darwin"* ]]; then
 	## Variables
@@ -36,7 +53,7 @@ else
 	cronfile=/etc/cron.d/$username
 
 	## Remove user
-	userdel wotnode
+	userdel $username
 
 	## Remove home directory, python, files
 	rm -rf $homedir

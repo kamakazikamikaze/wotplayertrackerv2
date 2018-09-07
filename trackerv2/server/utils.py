@@ -49,6 +49,8 @@ def create_client_config(filename='./config/client.json'):
         'application_id': 'replaceme',
         'throttle': 10,
         'server': 'http://replaceme/',
+        'ws endpoint': 'wswork',
+        'use ssl': False,
         'timeout': 5}
     write_config(config, filename)
 
@@ -69,8 +71,13 @@ def create_server_config(filename='./config/server.json'):
         'timeout': 15,
         'debug': False,
         'max tasks': 15,
+        'use whitelist': False,
+        'whitelist': [],
+        'blacklist': [],
+        'port': 8888,
         'logging': {
-            'errors': 'logs/error-%Y_%m_%d'
+            'level': 'warning',
+            'file': 'logs/server-%Y_%m_%d'
         },
         'database': {
             'user': 'root',

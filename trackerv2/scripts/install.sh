@@ -1,17 +1,35 @@
 #!/bin/bash
 
 if [ "$EUID" -ne 0 ]
-	then echo "Please run with 'sudo'"
-	exit
+then 
+	echo "Please run with 'sudo'"
+	exit 1
 fi
+
+if [ $# -ne 1 ]
+then
+	echo "Usage: $0 {server|client}"
+	exit 1
+fi
+
+## Exit on errors
+set -e
 
 ## Global variables
 pyversion=3.7.0
-username=wotnode
 pyurl=https://www.python.org/ftp/python/$pyversion/Python-$pyversion.tgz
 pysha=ef7462723026534d2eb1b44db7a3782276b3007d
 shacmd=sha1sum
 kernel=$(uname -s)
+installing=$(echo $1 | tr '[:upper:]' '[:lower:]')
+
+if [ $installing != "server" ] && [ $installing != "client" ]
+then
+	echo "Usage: $0 {server|client}"
+	exit 1
+fi
+
+username=wot$installing
 
 if [[ $kernel = "Darwin"* ]]
 then
@@ -20,7 +38,7 @@ then
 	group=$username
 	homedir=/Users/$username
 	cronfile=/usr/lib/cron/tabs/$username
-	download=curl
+	#download=curl
 	umaxid=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -ug | tail -1)
 	uid=$((umaxid+1))
 	gmaxid=$(dscl . -list /Groups PrimaryGroupID | awk '{print $2}' | sort -ug | tail -1)
@@ -42,7 +60,7 @@ then
 else
 	## Variables
 	cronfile=/etc/cron.d/$username
-	download=wget
+	#download=wget
 
 	## Create user
 	useradd -m -r $username
@@ -52,6 +70,40 @@ else
 fi
 
 ## Python setup
+
+# Install the build dependencies
+# Git isn't needed for clients, but it won't hurt them either
+if [[ $kernel = "Darwin"* ]]
+then
+	# TODO
+	xcode-select --install
+else
+	# https://devguide.python.org/setup/#unix
+	if [[ $(which yum 2>/dev/null) != "" ]]
+	then
+		yum -y install yum-utils git
+		yum-builddep python3
+	#
+	#elif [[ $(which zypper) != "" ]]
+	#then
+	#elif [[ $(which zypp) != "" ]]
+	#then
+	elif [[ $(which dnf 2>/dev/null) != "" ]]
+	then
+		dnf -y install dnf-plugins-core git
+		dnf builddep python3
+	elif [[ $(which apt 2>/dev/null) != "" ]]
+	then
+		apt-get update
+		apt-get -y install git
+		apt-get build-dep python3.7
+	else
+		echo "What OS is this? Please let us know at https://github.com/kamakazikamikaze/wotplayertrackerv2/issues"
+		exit 1
+	fi
+fi
+
+# TODO: build python in /tmp in case the script needs to be re-run
 mkdir -p $homedir/python
 pushd $homedir/python
 if [ ! -e /tmp/Python-$pyversion.tgz ] || [ "$($shacmd /tmp/Python-$pyversion.tgz | cut -d' ' -f1)" != "$pysha" ]
@@ -73,29 +125,60 @@ popd # $homedir/python
 rm -rf Python-$pyversion
 chown -R $username:$group $homedir/python
 
-## Pip setup
-# pip3 included with Python 3.6.5 source tarball
-#wget --no-check-certificate https://bootstrap.pypa.io/get-pip.py -O - | sudo -u $username bin/python - --user
-
 ## Virtualenv setup
 sudo -u $username bash -c "$homedir/python/bin/pyvenv $homedir/wottracker"
 
 ## Install modules
-cd ..
-wget https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/client-requirements.txt
-chown $username:$group client-requirements.txt
-sudo -u $username bash -c "$homedir/wottracker/bin/pip3 install -r client-requirements.txt"
+cd .. # $homedir
+
+if [ $installing = "client" ]
+then
+	wget https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/$installing-requirements.txt
+	chown $username:$group $installing-requirements.txt
+	wget https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/trackerv2/client/update.py
+	chown $username:$group update.py
+	cat <<EOF > $homedir/client.json
+	{
+		"server": "http://changeme/",
+		"application_id": "demo",
+		"throttle": 10,
+		"debug": false
+	}
+EOF
+	chown $username:$group client.json
+else
+	sudo -u $username git clone https://github.com/kamakazikamikaze/wotplayertrackerv2.git
+	cd wotplayertrackerv2
+	mkdir config
+fi
+sudo -u $username bash -c "$homedir/wottracker/bin/pip3 install -r $installing-requirements.txt"
+
+if [ $installing = "server" ]
+then
+	cd trackerv2/server
+	sudo -u $username bash -c "$homedir/wottracker/bin/python server.py ../../config/server.json -c ../../config/client.json -g"
+	chown -R $username:$group ../../config
+fi
 
 ## Return to working directory
-popd	
+popd
 
+if [ $installing = "server" ]
+then
+	croncmd="cd $homedir && wottracker/bin/python server.py ../../config/server.json -c ../../config/client.json -f ../../files"
+	cronminute=0
+else
+	cronminute=1
+	croncmd="cd $homedir && wottracker/bin/python update.py client.json; wottracker/bin/python client.py client.json"
+fi
+	
 touch $cronfile
 if [[ $kernel = "Darwin"* ]]
 then
 	hour=$(( (( $(date +%:z | cut -d: -f1) + 24 )) % 24 ))
-	minute=$(( (( $(date +%:z | cut -d: -f2) + 60 )) % 60 ))
+	minute=$(( (( $(date +%:z | cut -d: -f2) + 60 + $cronminute )) % 60 ))
 	echo 'MAILTO=""' > $cronfile
-	echo "$minute $hour * * * bash -c 'cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json'" >> $cronfile
+	echo "$minute $hour * * * bash -c '$croncmd'" >> $cronfile
 	echo "0 2 * * * bash -c 'cd $homedir && ./adjustcron.sh'" >> $cronfile
 
 	# macOS doesn't have an updated cron binary to use the CRON_TZ flag. We'll have to run a script to adjust for daylight savings manually
@@ -105,29 +188,21 @@ then
 	echo '#!/bin/bash' > $homedir/adjustcron.sh
 	echo "cronfile=$cronfile" >> $homedir/adjustcron.sh
 	echo "homedir=$homedir" >> $homedir/adjustcron.sh
+	echo "cronminute=$cronminute" >> $homedir/adjustcron.sh
 	echo 'hour=$(( (( $(date +%:z | cut -d: -f1) + 24 )) % 24 ))' >> $homedir/adjustcron.sh
-	echo 'minute=$(( (( $(date +%:z | cut -d: -f1) + 60 )) % 60 ))' >> $homedir/adjustcron.sh
+	echo 'minute=$(( (( $(date +%:z | cut -d: -f1) + 60 + $cronminute )) % 60 ))' >> $homedir/adjustcron.sh
 	echo 'echo '"'"'MAILTO="" >> $cronfile' >> $homedir/adjustcron.sh
-	echo 'echo "$minute $hour * * * bash -c '"'"'cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json'"'"' >> $cronfile"' >> $homedir/adjustcron.sh
+	echo 'echo "$minute $hour * * * bash -c '"'"$croncmd"'"' >> $cronfile"' >> $homedir/adjustcron.sh
 	echo 'echo "0 2 * * * bash -c '"'"'cd $homedir && ./adjustcron.sh'"'"'" >> $cronfile' >> $homedir/adjustcron.sh
+
 	## Add Firewall exception
 	# I think we'll leave firewall exceptions to the user to implement.
 else
 	## Add scheduler task for running node
 	echo "CRON_TZ=UTC" > $cronfile
-	echo "1 0 * * *  $username  bash -c 'cd $homedir && source wottracker/bin/activate && python update.py client.json; python client.py client.json'" >> $cronfile
+	echo "$cronminute 0 * * *  $username  bash -c '$croncmd'" >> $cronfile
 
 	## Add Firewall exception
 	# I think we'll leave firewall exceptions to the user to implement. SuSE, Redhat, Ubuntu all have different programs
 fi
 
-wget https://github.com/kamakazikamikaze/wotplayertrackerv2/raw/master/trackerv2/client/update.py -O $homedir/update.py
-
-cat <<EOF >> $homedir/client.json
-{
-	"server": "http://changeme/",
-	"application_id": "demo",
-	"throttle": 10,
-	"debug": false
-}
-EOF

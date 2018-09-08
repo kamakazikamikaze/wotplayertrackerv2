@@ -13,7 +13,8 @@ from tornado.escape import json_decode, json_encode
 
 from database import setup_database
 from sendtoindexer import create_generator_diffs, create_generator_players
-from sendtoindexer import create_generator_totals, send_data
+from sendtoindexer import create_generator_players_sync, send_data
+from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
 from utils import create_client_config, create_server_config
 from work import setup_work
@@ -269,46 +270,56 @@ async def send_to_elasticsearch(conf):
             await conn.fetch('SELECT * FROM total_battles_{}'.format(
                 today.strftime('%Y_%m_%d'))))
         logger.info('ES: Sending totals')
-        send_data(conf, totals)
+        await send_data(conf, totals)
         diffs = create_generator_diffs(
             today,
             await conn.fetch('SELECT * FROM diff_battles_{}'.format(
                 today.strftime('%Y_%m_%d'))))
         logger.info('ES: Sending diffs')
-        send_data(conf, diffs)
+        await send_data(conf, diffs)
         player_ids = set.union(
             set(map(lambda p: int(p['_source']['account_id']), totals)),
             set(map(lambda p: int(p['_source']['account_id']), diffs)))
         stmt = await conn.prepare('SELECT * FROM players WHERE account_id=$1')
-        # Will this work as a generator?
         players = create_generator_players(stmt, player_ids)
         logger.info('ES: Sending players')
-        send_data(conf, players, 'update')
+        await send_data(conf, players, 'update')
         logger.info('ES: Finished')
 
 async def send_everything_to_elasticsearch(conf):
     async with dbpool.acquire() as conn:
-        tables = await conn.fetch('SELECT table_name FROM information_schema.tables WHERE table_schema="public" AND table_type="BASE TABLE"')
+        tables = await conn.fetch("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
         for table in tables:
             logger.info('ES: Sending %s', table['table_name'])
             if 'diff' in table['table_name']:
                 diffs = create_generator_diffs(
                     datetime.strptime(
-                        table,
+                        table['table_name'],
                         'diff_battles_%Y_%m_%d'),
-                    await conn.fetch('SELECT * from $1', table['table_name']))
-                send_data(conf, diffs)
+                    await conn.fetch(
+                        'SELECT * from {}'.format(table['table_name'])))
+                await send_data(conf, diffs)
             elif 'total' in table['table_name']:
                 totals = create_generator_totals(
                     datetime.strptime(
-                        table,
+                        table['table_name'],
                         'total_battles_%Y_%m_%d'),
-                    await conn.fetch('SELECT * from $1', table['table_name']))
-                send_data(conf, totals)
-            elif 'player' in table['table_name']:
-                players = create_generator_players(
+                    await conn.fetch(
+                        'SELECT * from {}'.format(table['table_name'])))
+                await send_data(conf, totals)
+            elif 'players' in table['table_name']:
+                players = create_generator_players_sync(
                     await conn.fetch('SELECT * FROM players'))
-                send_data(conf, players, 'update')
+                await send_data(conf, players)
+
+
+async def send_missing_players_to_elasticsearch(conf):
+    today = datetime.utcnow()
+    async with dbpool.acquire() as conn:
+        players = [p for p in create_generator_players_sync(
+            await conn.fetch('SELECT * FROM players'))]
+        for name, cluster in conf['elasticsearch']['clusters'].items():
+            await _send_to_cluster_skip_errors(cluster, players)
 
 
 async def send_to_database(results):

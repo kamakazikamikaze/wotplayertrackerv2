@@ -5,7 +5,7 @@ import json
 from uuid import uuid4
 from os import makedirs, path, remove, pardir
 import pickle
-from types import GeneratorType
+from types import AsyncGeneratorType, GeneratorType
 
 
 def check_index(conf):
@@ -16,7 +16,7 @@ def create_index(conf):
     pass
 
 
-def send_data(conf, data, action='create'):
+async def send_data(conf, data, action='create'):
     r"""
     Send data to Elasticsearch cluster(s)
     :param dict conf: Full configuration
@@ -25,20 +25,20 @@ def send_data(conf, data, action='create'):
     for name, cluster in conf['elasticsearch']['clusters'].items():
         try:
             if action == 'create':
-                _send_to_cluster(cluster, data)
+                await _send_to_cluster(cluster, data)
             elif action == 'update':
-                _update_to_cluster(cluster, data)
+                await _update_to_cluster(cluster, data)
         except (BulkIndexError, TransportError) as err:
             print('ES: Error encountered. Offloading data.')
             print('ES: Error:', err)
-            offload_local(
+            await offload_local(
                 name,
                 cluster,
                 conf['elasticsearch']['offload'],
                 data)
 
 
-def _send_to_cluster(conf, data):
+async def _send_to_cluster(conf, data):
     r"""
     Stream data to an Elasticsearch cluster.
     .. note: This method does **not** catch exceptions
@@ -48,27 +48,65 @@ def _send_to_cluster(conf, data):
     es = Elasticsearch(**conf)
     if isinstance(data, GeneratorType):
         data = list(data)
+    elif isinstance(data, AsyncGeneratorType):
+        data = [d async for d in data]
     helpers.bulk(es, data)
 
 
-def _update_to_cluster(conf, data):
+async def _send_to_cluster_skip_errors(conf, data):
+    r"""
+    Stream data to an Elasticsearch cluster.
+    :param dict conf: Connection parameters for `elasticsearch.Elasticsearch`
+    :param list(dict) data: ES documents to send
+    """
+    def chunks(l, n):
+        n = max(1, n)
+        return (l[i:i + n] for i in range(0, len(l), n))
     es = Elasticsearch(**conf)
-    for doc in data:
+    if isinstance(data, GeneratorType):
+        data = list(data)
+    elif isinstance(data, AsyncGeneratorType):
+        data = [d async for d in data]
+    for chunk in chunks(data, 100):
         try:
-            es.update(
-                index=doc['_index'],
-                doc_type=doc['_type'],
-                id=doc['_id'],
-                body={
-                    'doc': doc['_source']})
-        except TransportError as te:
-            if te.args[1] == 'document_missing_exception':
-                helpers.bulk(es, [doc])
-            else:
-                raise te
+            helpers.bulk(es, data)
+        except BulkIndexError:
+            pass
 
 
-def offload_local(name, clusterconf, dumpconf, data):
+async def _update_to_cluster(conf, data):
+    es = Elasticsearch(**conf)
+    if isinstance(data, GeneratorType):
+        for doc in data:
+            try:
+                es.update(
+                    index=doc['_index'],
+                    doc_type=doc['_type'],
+                    id=doc['_id'],
+                    body={
+                        'doc': doc['_source']})
+            except TransportError as te:
+                if te.args[1] == 'document_missing_exception':
+                    helpers.bulk(es, [doc])
+                else:
+                    raise te
+    elif isinstance(data, AsyncGeneratorType):
+        async for doc in data:
+            try:
+                es.update(
+                    index=doc['_index'],
+                    doc_type=doc['_type'],
+                    id=doc['_id'],
+                    body={
+                        'doc': doc['_source']})
+            except TransportError as te:
+                if te.args[1] == 'document_missing_exception':
+                    helpers.bulk(es, [doc])
+                else:
+                    raise te
+
+
+async def offload_local(name, clusterconf, dumpconf, data):
     r"""
     When the Elasticsearch cluster/node is unavailable, offload data to disk
     and try to resend the next time the script is run.
@@ -83,6 +121,8 @@ def offload_local(name, clusterconf, dumpconf, data):
     with open(path.join(dumpconf['data folder'], dumpuuid), 'wb') as outfile:
         if isinstance(data, GeneratorType):
             data = list(data)
+        elif isinstance(data, AsyncGeneratorType):
+            data = [d async for d in data]
         pickle.dump(data, outfile, pickle.HIGHEST_PROTOCOL)
     # with open(conf['index'], 'a') as indexfile:
     #     indexfile.write(dumpuuid + '\n')
@@ -159,7 +199,27 @@ def create_generator_diffs(day, query_results):
     } for player in query_results)
 
 
-def create_generator_players(query_results):
+async def create_generator_players(statement, player_ids):
+    for pid in player_ids:
+        player = await statement.fetchrow(pid)
+        yield {
+            "_index": "players",
+            "_type": "player",
+            "_id": player['account_id'],
+            "_source": {
+                "account_id": player['account_id'],
+                "nickname": player['nickname'],
+                "console": player['console'],
+                "created_at": player['created_at'],
+                "last_battle_time": player['last_battle_time'],
+                "updated_at": player['updated_at'],
+                "battles": player['battles'],
+                "last_api_pull": player['_last_api_pull']
+            }
+        }
+
+
+def create_generator_players_sync(query_results):
     return ({
         "_index": "players",
         "_type": "player",

@@ -22,12 +22,20 @@ class TrackerClientNode:
     # solution for clients with multiple public IP addresses, which is
     # unlikely, we'll bind this to the class to share the work queue
     workqueue = Queue()
+    # data_fields = (
+    #     'created_at',
+    #     'account_id',
+    #     'last_battle_time',
+    #     'nickname',
+    #     'updated_at',
+    #     'statistics.all.battles'
+    # )
     data_fields = (
-        'created_at',
-        'account_id',
-        'last_battle_time',
-        'nickname',
-        'updated_at',
+        'created_at,'
+        'account_id,'
+        'last_battle_time,'
+        'nickname,'
+        'updated_at,'
         'statistics.all.battles'
     )
     api_url = 'https://api-{}-console.worldoftanks.com/wotx/'
@@ -88,9 +96,9 @@ class TrackerClientNode:
         self.log.debug('Batch %i: Starting', work['batch'])
         start = datetime.now()
         params = {
-            'account_id': ','.join(map(str, work['players'])),
+            'account_id': ','.join(map(str, range(*work['players']))),
             'application_id': self.key,
-            'fields': ','.join(map(str, TrackerClientNode.data_fields)),
+            'fields': TrackerClientNode.data_fields,
             'language': 'en'
         }
         url = url_concat(

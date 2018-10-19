@@ -46,7 +46,7 @@ def write_config(config, filename='./config/server.json'):
 
 def create_client_config(filename='./config/client.json'):
     config = {
-        'application_id': 'replaceme',
+        'application_id': 'demo',
         'throttle': 10,
         'server': 'http://replaceme/',
         'ws endpoint': 'wswork',
@@ -57,7 +57,17 @@ def create_client_config(filename='./config/client.json'):
 
 def create_server_config(filename='./config/server.json'):
     newconfig = {
-        'application_id': 'demo',
+        'application_id': {
+            'catchall': {
+                'key': 'demo',
+                'throttle': 10
+            },
+            'exampleapikey1': {
+                'key': 'demo',
+                'addresses': ['x.x.x.x'],
+                'throttle': 20
+            }
+        },
         'language': 'en',
         'xbox': {
             'start account': 5000,
@@ -70,7 +80,7 @@ def create_server_config(filename='./config/server.json'):
         'max retries': 5,
         'timeout': 15,
         'debug': False,
-        'max tasks': 15,
+        'extra tasks': 10,
         'use whitelist': False,
         'whitelist': [],
         'blacklist': [],

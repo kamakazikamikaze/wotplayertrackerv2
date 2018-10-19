@@ -1,5 +1,6 @@
 import asyncpg
 from collections import deque
+from copy import copy
 from datetime import datetime
 from json.decoder import JSONDecodeError
 import logging
@@ -68,28 +69,32 @@ def _setupLogging(conf):
 
 
 def move_to_stale(ipaddress, work):
+    r"""
+    Work that does not return before the timeout is appended to a queue
+    """
     global assignedworkcount
-    # Not going to catch errors yet for debugging purposes
     del assignedwork[ipaddress][work[0]]
     stalework.append(work)
     assignedworkcount -= 1
 
 
 class MainHandler(web.RequestHandler):
+    r"""
+    Quick running check
+    """
 
     def get(self):
         self.write('WoT Console Player Tracker v2 is running!')
 
 
-# class UUIDHandler(web.RequestHandler):
-#
-#     def get(self):
-#         self.write(genuuid(self.request.remote_ip))
-
-
 class DebugHandler(web.RequestHandler):
+    r"""
+    Temporary endpoint until StatusHandler is completed
+    """
 
     def get(self, uri=None):
+        if uri is None:
+            return
         if uri == 'hashes':
             self.write(json_encode(hashes))
         elif uri == 'work':
@@ -104,17 +109,12 @@ class DebugHandler(web.RequestHandler):
             self.write(str(assignedworkcount))
         else:
             self.write('No debug output for: ' + uri)
-        # self.write(str(self.request.uri))
 
 
 class UpdateHandler(web.RequestHandler):
     r"""
     Client updates (scripts) as served here
     """
-
-    # def get(self, filetype=None):
-    # # clientinfo = json_decode(self.request.body)
-    # self.write(str(filetype))
 
     def get(self):
         try:
@@ -152,7 +152,25 @@ class SetupHandler(web.RequestHandler):
         self.clientconfig = clientconfig
 
     def get(self):
+        client = self.request.remote_ip
+        # Previously I thought it best to make a local copy of the config so
+        # that we do not have a different GET request overwrite the API key.
+        # However, this method is not async and is therefore thread-safe. We
+        # can overwrite the self.clientconfig for now without any concern.
+        # clientconf = copy(self.clientconfig)
+        # Immediately assign to catchall
+        self.clientconfig['application_id'] = self.serverconfig[
+            'application_id']['catchall']
+        for key, subdict in self.serverconfig['application_id'].items():
+            if key == 'catchall':
+                continue
+            if client in subdict['addresses']:
+                self.clientconfig['application_id'] = subdict['key']
+                self.clientconfig['throttle'] = subdict['throttle']
+                break
         self.write(json_encode(self.clientconfig))
+        WorkWSHandler.maxwork[client] = self.clientconfig[
+            'throttle'] + self.serverconfig['extra tasks']
 
     def post(self):
         if (self.serverconfig['use whitelist'] and
@@ -168,8 +186,13 @@ class SetupHandler(web.RequestHandler):
 
 
 class WorkWSHandler(websocket.WebSocketHandler):
+    r"""
+    Endpoint for delegating work to client machines
+    """
+
     wschecks = dict()
     wsconns = set()
+    maxwork = dict()
 
     def get_compression_options(self):
         # TODO: Read in configuration from server.json
@@ -179,10 +202,11 @@ class WorkWSHandler(websocket.WebSocketHandler):
         client = self.request.remote_ip
         if client not in registered:
             self.close()
+            return
         logger.info('Worker %s joined', genuuid(client))
         await self.send_work()
         WorkWSHandler.wschecks[client] = ioloop.PeriodicCallback(
-            self.send_work, 200)
+            self.send_work, 500)
         WorkWSHandler.wschecks[client].start()
         WorkWSHandler.wsconns.add(self)
 
@@ -193,8 +217,9 @@ class WorkWSHandler(websocket.WebSocketHandler):
             return
         if workdone:
             self.close()
+            return
         client = self.request.remote_ip
-        while len(assignedwork[client]) < server_config['max tasks']:
+        while len(assignedwork[client]) < WorkWSHandler.maxwork[client]:
             try:
                 work = stalework.pop()
             except IndexError:
@@ -243,7 +268,10 @@ class WorkWSHandler(websocket.WebSocketHandler):
                 timeouts[client][results['batch']]
             )
         except AttributeError:
-            # Server got work from a client that is not assigned to it
+            # Server got work from a client that is not assigned to it. This
+            # can occur when a client is running on the same machine as the
+            # server, especially if IPv4 and IPv6 is enabled. Avoid using a
+            # target of "localhost" to mitigate this.
             return
         # Remove timeout first
         del timeouts[client][results['batch']]
@@ -252,17 +280,21 @@ class WorkWSHandler(websocket.WebSocketHandler):
         except KeyError:
             # work has already been moved to stale. How do we correct this?
             pass
-        assignedworkcount -= 1
-        # global batches_complete
-        # batches_complete += 1
-        # results['_last_api_pull'] = datetime.utcfromtimestamp(
-        #     results['_last_api_pull'])
+        else:
+            # Don't decrement count unless assigned work is removed
+            assignedworkcount -= 1
+            # global batches_complete
+            # batches_complete += 1
         await self.send_work()
-
         ioloop.IOLoop.current().add_callback(send_to_database, results)
 
 
 async def send_to_elasticsearch(conf):
+    r"""
+    Send updates to Elasticsearch.
+    
+    This method should be called once work has concluded.
+    """
     today = datetime.utcnow()
     async with dbpool.acquire() as conn:
         totals = create_generator_totals(
@@ -314,6 +346,12 @@ async def send_everything_to_elasticsearch(conf):
 
 
 async def send_missing_players_to_elasticsearch(conf):
+    r"""
+    Synchronizes players from an existing database to Elasticsearch.
+    
+    Only updated players have information sent to ES. If a new cluster
+    is added, it will not have all players in it as a result.
+    """
     today = datetime.utcnow()
     async with dbpool.acquire() as conn:
         players = [p for p in create_generator_players_sync(
@@ -361,6 +399,7 @@ async def send_to_database(results):
                                          p['statistics']['all']['battles'],
                                          results['_last_api_pull'])
 
+
 async def opendb(dbconf):
     global dbpool
     dbpool = await asyncpg.create_pool(**dbconf)
@@ -401,7 +440,7 @@ async def try_exit(config, configpath):
 
             logger.info('Checking database to expand players')
             if update:
-                logger.debug('Updating configuration.')
+                logger.info('Expanding max player configuration.')
                 logger.debug('Max Xbox account: %i', max_xbox)
                 logger.debug('Max PS4 account: %i', max_ps4)
                 write_config(config, configpath)
@@ -417,7 +456,6 @@ async def try_exit(config, configpath):
 def make_app(sfiles, serverconfig, clientconfig):
     return web.Application([
         (r"/", MainHandler),
-        # (r"/uuid", UUIDHandler),
         (r"/setup", SetupHandler,
          dict(serverconfig=serverconfig, clientconfig=clientconfig)),
         (r"/updates", UpdateHandler),
@@ -433,7 +471,6 @@ def make_app(sfiles, serverconfig, clientconfig):
 if __name__ == '__main__':
     from argparse import ArgumentParser
     agp = ArgumentParser()
-    # agp.add_argument('-p', '--port', help='Port to listen on', default=8888)
     agp.add_argument(
         '-f',
         '--static-files',
@@ -495,4 +532,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info('Shutting down')
         ioloop.IOLoop.current().stop()
-        exitcall.stop()
+        try:
+            exitcall.stop()
+        except NameError:
+            pass

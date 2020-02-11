@@ -150,6 +150,7 @@ else
 	sudo -u $username git clone https://github.com/kamakazikamikaze/wotplayertrackerv2.git
 	cd wotplayertrackerv2
 	mkdir config
+	chown $username:$group ../../config/
 fi
 sudo -u $username bash -c "$homedir/wottracker/bin/pip3 install -r $installing-requirements.txt"
 
@@ -157,7 +158,7 @@ if [ $installing = "server" ]
 then
 	cd trackerv2/server
 	sudo -u $username bash -c "$homedir/wottracker/bin/python server.py ../../config/server.json -c ../../config/client.json -g"
-	chown -R $username:$group ../../config
+	chown $username:$group ../../config/*
 fi
 
 ## Return to working directory
@@ -165,7 +166,7 @@ popd
 
 if [ $installing = "server" ]
 then
-	croncmd="cd $homedir && wottracker/bin/python server.py ../../config/server.json -c ../../config/client.json -f ../../files"
+	croncmd="cd $homedir/wotplayertrackerv2/trackerv2/server/ && wottracker/bin/python server.py ../../config/server.json -c ../../config/client.json -f ../../files"
 	cronminute=0
 else
 	cronminute=1

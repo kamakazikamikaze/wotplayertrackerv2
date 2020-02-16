@@ -19,7 +19,9 @@ async def setup_database(db):
     _ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
-        battles integer NOT NULL)'''.format(datetime.utcnow().strftime('total_battles_%Y_%m_%d')))
+        battles integer NOT NULL)'''.format(
+        datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
+    )
 
     _ = await conn.execute('''
         CREATE TABLE {} (
@@ -54,6 +56,49 @@ async def setup_database(db):
             END
             $func$ LANGUAGE plpgsql;
             CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();''')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
+
+    try:
+        _ = await conn.execute('''
+            CREATE OR REPLACE FUNCTION upsert_player(
+                a_id INT,
+                nick TEXT,
+                con TEXT,
+                c_at TIMESTAMP,
+                l_b_t TIMESTAMP,
+                u_at TIMESTAMP,
+                b INT,
+                _l_a_p TIMESTAMP
+            ) RETURNS VOID AS
+            $$
+            BEGIN
+                LOOP
+                    -- first, try to update the key
+                    UPDATE players SET (last_battle_time, updated_at, battles,
+                        _last_api_pull) = (l_b_t, u_at, b, _l_a_p)
+                        WHERE account_id = a_id;
+                    IF found THEN
+                        RETURN;
+                    END IF;
+                    -- not there, try to insert
+                    BEGIN
+                        INSERT INTO players (
+                            account_id, nickname, console, created_at,
+                            last_battle_time, updated_at, battles,
+                            _last_api_pull
+                            ) VALUES (
+                            a_id, nick, con, c_at, l_b_t, u_at, b, _l_a_p
+                            );
+                        RETURN;
+                    EXCEPTION WHEN unique_violation THEN
+                        -- do nothing; and loop to try the UPDATE
+                    END;
+                END LOOP;
+            END;
+            $$
+            LANGUAGE plpgsql;
+            ''')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 

@@ -71,12 +71,13 @@ def create_server_config(filename='./config/server.json'):
         'language': 'en',
         'xbox': {
             'start account': 5000,
-            'max account': 14000000
+            'max account': 15200000
         },
         'ps4': {
             'start account': 1073740000,
-            'max account': 1082000000
+            'max account': 1083200000
         },
+        'expand': True,
         'max retries': 5,
         'timeout': 15,
         'debug': False,

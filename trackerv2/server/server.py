@@ -292,7 +292,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
 async def send_to_elasticsearch(conf):
     r"""
     Send updates to Elasticsearch.
-    
+
     This method should be called once work has concluded.
     """
     today = datetime.utcnow()
@@ -320,7 +320,12 @@ async def send_to_elasticsearch(conf):
 
 async def send_everything_to_elasticsearch(conf):
     async with dbpool.acquire() as conn:
-        tables = await conn.fetch("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")
+        tables = await conn.fetch(
+            (
+                "SELECT table_name FROM information_schema.tables WHERE "
+                "table_schema='public' AND table_type='BASE TABLE'"
+            )
+        )
         for table in tables:
             logger.info('ES: Sending %s', table['table_name'])
             if 'diff' in table['table_name']:
@@ -348,7 +353,7 @@ async def send_everything_to_elasticsearch(conf):
 async def send_missing_players_to_elasticsearch(conf):
     r"""
     Synchronizes players from an existing database to Elasticsearch.
-    
+
     Only updated players have information sent to ES. If a new cluster
     is added, it will not have all players in it as a result.
     """
@@ -361,43 +366,26 @@ async def send_missing_players_to_elasticsearch(conf):
 
 
 async def send_to_database(results):
-    # If UPDATE is followed by a 0, the player does not already exist.
-    # We will then insert them. Since 99.9% of players should already
-    # exist in our DB, this should provide the best performance.
-    # Also, the results are a nested dict of {'playerid': {data}, ...}
-    # so we will need to efficiently pass this to executemany
-    # print(results)
     async with dbpool.acquire() as conn:
-        for __, p in results['data'].items():
-            if p is None:
-                continue
-            # print(p)
-            res = await conn.execute('''
-                UPDATE players SET (last_battle_time, updated_at, battles,
-                _last_api_pull) = (to_timestamp($1), to_timestamp($2), $3,
-                to_timestamp($4)) WHERE account_id = $5
-                ''',
-                                     p['last_battle_time'],
-                                     p['updated_at'],
-                                     p['statistics']['all']['battles'],
-                                     results['_last_api_pull'],
-                                     p['account_id'])
-            if res.split()[-1] == '0':
-                res = await conn.execute('''
-                    INSERT INTO players (account_id, nickname, console,
-                    created_at, last_battle_time, updated_at, battles,
-                    _last_api_pull) VALUES
-                    ($1, $2, $3, to_timestamp($4), to_timestamp($5),
-                    to_timestamp($6), $7, to_timestamp($8))
-                ''',
-                                         p['account_id'],
-                                         p['nickname'],
-                                         results['console'],
-                                         p['created_at'],
-                                         p['last_battle_time'],
-                                         p['updated_at'],
-                                         p['statistics']['all']['battles'],
-                                         results['_last_api_pull'])
+        # https://stackoverflow.com/a/1109198
+        _ = await conn.executemany(
+            (
+                'SELECT upsert_player($1::int, $2::text, $3::text, '
+                'to_timestamp($4)::timestamp, to_timestamp($5)::timestamp, '
+                'to_timestamp($6)::timestamp, $7::int, '
+                'to_timestamp($8)::timestamp)'
+            ),
+            [(
+                p['account_id'],
+                p['nickname'],
+                results['console'],
+                p['created_at'],
+                p['last_battle_time'],
+                p['updated_at'],
+                p['statistics']['all']['battles'],
+                results['_last_api_pull']
+            ) for p in results['data'].values()]
+        )
 
 
 async def opendb(dbconf):
@@ -415,35 +403,41 @@ async def try_exit(config, configpath):
         logger.info('Work complete')
 
         update = False
-        async with dbpool.acquire() as conn:
-            maximum = await conn.fetch(
-                'SELECT MAX(account_id), console FROM players GROUP BY console'
-            )
-            for record in maximum:
-                if record['console'] == 'xbox':
-                    max_xbox = record['max']
-                else:
-                    max_ps4 = record['max']
+        if 'expand' not in config or config['expand']:
+            async with dbpool.acquire() as conn:
+                maximum = await conn.fetch(
+                    (
+                        'SELECT MAX(account_id), console FROM '
+                        'players GROUP BY console'
+                    )
+                )
+                for record in maximum:
+                    if record['console'] == 'xbox':
+                        max_xbox = record['max']
+                    else:
+                        max_ps4 = record['max']
 
-            if 'max account' not in config['xbox']:
-                config['xbox']['max account'] = max_xbox + 200000
-                update = True
-            elif config['xbox']['max account'] - max_xbox < 50000:
-                config['xbox']['max account'] += 100000
-                update = True
-            if 'max account' not in config['ps4']:
-                config['ps4']['max account'] = max_ps4 + 200000
-                update = True
-            elif config['ps4']['max account'] - max_ps4 < 50000:
-                config['ps4']['max account'] += 100000
-                update = True
+                if 'max account' not in config['xbox']:
+                    config['xbox']['max account'] = max_xbox + 200000
+                    update = True
+                elif config['xbox']['max account'] - max_xbox < 50000:
+                    config['xbox']['max account'] += 100000
+                    update = True
+                if 'max account' not in config['ps4']:
+                    config['ps4']['max account'] = max_ps4 + 200000
+                    update = True
+                elif config['ps4']['max account'] - max_ps4 < 50000:
+                    config['ps4']['max account'] += 100000
+                    update = True
 
-            logger.info('Checking database to expand players')
-            if update:
-                logger.info('Expanding max player configuration.')
-                logger.debug('Max Xbox account: %i', max_xbox)
-                logger.debug('Max PS4 account: %i', max_ps4)
-                write_config(config, configpath)
+                logger.info('Checking database to expand players')
+                if update:
+                    logger.info('Expanding max player configuration.')
+                    logger.debug('Max Xbox account: %i', max_xbox)
+                    logger.debug('Max PS4 account: %i', max_ps4)
+                    write_config(config, configpath)
+        else:
+            logger.debug('Not expanding player ID range')
 
         if 'elasticsearch' in config:
             logger.info('Sending data to Elasticsearch')

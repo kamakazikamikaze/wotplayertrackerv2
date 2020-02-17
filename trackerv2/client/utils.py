@@ -5,6 +5,7 @@ from threading import Timer
 # from threading import _BoundedSemaphore as BoundedSemaphore, Timer
 from time import sleep
 from tornado.locks import BoundedSemaphore
+from typing import NamedTuple
 
 
 def getsha1(filename, buffer_size=65536):
@@ -50,3 +51,19 @@ def load_config(filename='./config/client.json'):
 def write_config(config, filename='./config/client.json'):
     with open(filename, 'w') as f:
         dump(config, f, indent=4)
+
+
+class Player(NamedTuple):
+    account_id: int
+    nickname: str
+    created_at: int
+    last_battle_time: int
+    updated_at: int
+    battles: int
+
+
+class APIResult(NamedTuple):
+    players: tuple
+    last_api_pull: int
+    console: str
+    batch: int

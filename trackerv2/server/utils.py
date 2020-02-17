@@ -4,6 +4,7 @@ from json import load, dump
 from os import walk
 from os.path import join as pjoin
 from uuid import NAMESPACE_DNS, uuid5
+from typing import NamedTuple
 
 BUF_SIZE = 65536
 
@@ -119,3 +120,19 @@ def create_server_config(filename='./config/server.json'):
 
 def nested_dd():
     return defaultdict(nested_dd)
+
+
+class Player(NamedTuple):
+    account_id: int
+    nickname: str
+    created_at: int
+    last_battle_time: int
+    updated_at: int
+    battles: int
+
+
+class APIResult(NamedTuple):
+    players: tuple
+    last_api_pull: int
+    console: str
+    batch: int

@@ -64,12 +64,12 @@ async def setup_database(db):
             CREATE OR REPLACE FUNCTION upsert_player(
                 a_id INT,
                 nick TEXT,
-                con TEXT,
                 c_at TIMESTAMP,
                 l_b_t TIMESTAMP,
                 u_at TIMESTAMP,
                 b INT,
-                _l_a_p TIMESTAMP
+                _l_a_p TIMESTAMP,
+                con TEXT
             ) RETURNS VOID AS
             $$
             BEGIN

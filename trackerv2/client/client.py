@@ -2,6 +2,7 @@ from datetime import datetime
 import logging
 from os import mkdir
 from os.path import exists
+from pickle import dumps
 from tornado import ioloop
 from tornado.escape import json_decode, json_encode
 from tornado.httpclient import AsyncHTTPClient  # , HTTPRequest
@@ -11,7 +12,7 @@ from tornado.simple_httpclient import HTTPTimeoutError
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
 
-from utils import load_config  # , write_config
+from utils import load_config, APIResult, Player  # , write_config
 # from wotconsole import player_data, WOTXResponseError
 
 workdone = False
@@ -22,14 +23,6 @@ class TrackerClientNode:
     # solution for clients with multiple public IP addresses, which is
     # unlikely, we'll bind this to the class to share the work queue
     workqueue = Queue()
-    # data_fields = (
-    #     'created_at',
-    #     'account_id',
-    #     'last_battle_time',
-    #     'nickname',
-    #     'updated_at',
-    #     'statistics.all.battles'
-    # )
     data_fields = (
         'created_at,'
         'account_id,'
@@ -116,13 +109,23 @@ class TrackerClientNode:
             'Batch %i: %f seconds to complete request',
             work['batch'],
             response.request_time)
-        result = {}
+        # result = {}
         try:
-            result['data'] = json_decode(response.body)['data']
-            result['_last_api_pull'] = response.request.start_time
-            result['batch'] = work['batch']
-            result['console'] = work['realm']
-            await self.conn.write_message(json_encode(result))
+            a = APIResult(
+                tuple(
+                    Player(
+                        p['account_id'],
+                        p['nickname'],
+                        p['created_at'],
+                        p['last_battle_time'],
+                        p['updated_at'],
+                        p['statistics']['all']['battles']
+                    ) for __, p in json_decode(
+                        response.body)['data'].items() if p),
+                response.request.start_time,
+                work['realm'],
+                work['batch'])
+            await self.conn.write_message(dumps(a), True)
             end = datetime.now()
             self.log.debug(
                 'Batch %i: %f seconds of runtime',
@@ -135,7 +138,6 @@ class TrackerClientNode:
                 json_decode(
                     response.body))
         except KeyError:
-            # print('Batch {}: ERROR :'.format(work['batch']), response.body)
             self.log.error('Batch %i: %s', work['batch'], response.body)
 
     async def connect(self):

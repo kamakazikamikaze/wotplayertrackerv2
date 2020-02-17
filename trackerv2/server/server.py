@@ -3,21 +3,24 @@ from collections import deque
 from copy import copy
 from datetime import datetime
 from json.decoder import JSONDecodeError
+import linecache
 import logging
-from os import mkdir
+from os import mkdir, sep
 from os.path import join as pjoin
 from os.path import split as psplit
 from os.path import exists
+from pickle import loads, UnpicklingError
 from sys import exit
 from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
+import tracemalloc
 
 from database import setup_database
 from sendtoindexer import create_generator_diffs, create_generator_players
 from sendtoindexer import create_generator_players_sync, send_data
 from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
-from utils import create_client_config, create_server_config
+from utils import create_client_config, create_server_config, APIResult, Player
 from work import setup_work
 
 workgenerator = None
@@ -131,6 +134,40 @@ class UpdateHandler(web.RequestHandler):
                     client['os'] +
                     '/' +
                     client['filename'])
+
+
+class TraceHandler(web.RequestHandler):
+    r"""
+    View system memory usage and profiling for debugging purposes
+    """
+
+    def get(self, uri=None):
+        if tracemalloc.is_tracing():
+            try:
+                uri = 10 if uri is None else int(uri)
+            except ValueError:
+                uri = 10
+            snapshot = tracemalloc.take_snapshot()
+            snapshot = snapshot.filter_traces((
+                tracemalloc.Filter(False, '<frozen importlib._bootstrap>'),
+                tracemalloc.Filter(False, '<unknown>')
+            ))
+            top_stats = snapshot.statistics('lineno')
+            output = []
+            for index, stat in enumerate(top_stats[:uri], 1):
+                frame = stat.traceback[0]
+                filename = sep.join(frame.filename.split(sep)[-2:])
+                output.append('#%s: %s:%s: %1.1f KiB<br />' %
+                              (index, filename, frame.lineno, stat.size / 1024))
+                line = linecache.getline(frame.filename, frame.lineno).strip()
+                if line:
+                    output.append('&nbsp;&nbsp;&nbsp;&nbsp;%s<br />' % line)
+            self.write(
+                '<html><body>' +
+                ''.join(output) +
+                '</body></html>')
+        else:
+            self.set_status(404)
 
 
 class StatusHandler(web.RequestHandler):
@@ -259,13 +296,13 @@ class WorkWSHandler(websocket.WebSocketHandler):
         global dbpool
         client = self.request.remote_ip
         try:
-            results = json_decode(message)
-        except JSONDecodeError:
-            # Will the clients ever send erroneous result formats?
+            results = loads(message)
+        except UnpicklingError:
+            # Will the clients ever send incomplete data?
             return
         try:
             ioloop.IOLoop.current().remove_timeout(
-                timeouts[client][results['batch']]
+                timeouts[client][results.batch]
             )
         except AttributeError:
             # Server got work from a client that is not assigned to it. This
@@ -274,9 +311,9 @@ class WorkWSHandler(websocket.WebSocketHandler):
             # target of "localhost" to mitigate this.
             return
         # Remove timeout first
-        del timeouts[client][results['batch']]
+        del timeouts[client][results.batch]
         try:
-            del assignedwork[client][results['batch']]
+            del assignedwork[client][results.batch]
         except KeyError:
             # work has already been moved to stale. How do we correct this?
             pass
@@ -370,21 +407,12 @@ async def send_to_database(results):
         # https://stackoverflow.com/a/1109198
         _ = await conn.executemany(
             (
-                'SELECT upsert_player($1::int, $2::text, $3::text, '
-                'to_timestamp($4)::timestamp, to_timestamp($5)::timestamp, '
-                'to_timestamp($6)::timestamp, $7::int, '
-                'to_timestamp($8)::timestamp)'
+                'SELECT upsert_player($1::int, $2::text, '
+                'to_timestamp($3)::timestamp, to_timestamp($4)::timestamp, '
+                'to_timestamp($5)::timestamp, $6::int, '
+                'to_timestamp($7)::timestamp, $8::text)'
             ),
-            [(
-                p['account_id'],
-                p['nickname'],
-                results['console'],
-                p['created_at'],
-                p['last_battle_time'],
-                p['updated_at'],
-                p['statistics']['all']['battles'],
-                results['_last_api_pull']
-            ) for p in results['data'].values()]
+            tuple((*p, results[1], results[2]) for p in results[0])
         )
 
 
@@ -456,6 +484,7 @@ def make_app(sfiles, serverconfig, clientconfig):
         (r"/wswork", WorkWSHandler),
         (r"/status", StatusHandler),
         (r"/debug/([^/]*)", DebugHandler),
+        (r"/trace/([^/]*)", TraceHandler),
         (r"/files/nix/([^/]*)", web.StaticFileHandler,
          {'path': pjoin(sfiles, 'nix')}),
         (r"/files/win/([^/]*)", web.StaticFileHandler,
@@ -485,6 +514,12 @@ if __name__ == '__main__':
         help='Generate first-time configuration',
         default=False,
         action='store_true')
+    agp.add_argument(
+        '-t',
+        '--trace-memory',
+        help='Debug memory consumption issues',
+        default=False,
+        action='store_true')
     args = agp.parse_args()
 
     if args.generate_config:
@@ -507,6 +542,9 @@ if __name__ == '__main__':
     # TODO: Create a timer to change startwork
     startwork = True
     _setupLogging(server_config)
+    if args.trace_memory:
+        logger.debug('Starting memory trace')
+        tracemalloc.start()
 
     try:
         start = datetime.now()

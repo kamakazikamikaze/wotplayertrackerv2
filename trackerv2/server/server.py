@@ -1,4 +1,4 @@
-import asyncpg
+from asyncpg import create_pool
 from collections import deque
 from copy import copy
 from datetime import datetime
@@ -9,7 +9,7 @@ from os import mkdir, sep
 from os.path import join as pjoin
 from os.path import split as psplit
 from os.path import exists
-from pickle import loads, UnpicklingError
+from pickle import loads, dumps, UnpicklingError
 from sys import exit
 from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
@@ -31,6 +31,8 @@ stalework = None
 server_config = None
 registered = set()
 # batches_complete = 0
+activedbcallbacks = 0
+databasequeue = 0
 startwork = False
 workdone = False
 dbpool = None
@@ -104,6 +106,10 @@ class DebugHandler(web.RequestHandler):
             self.write(json_encode(assignedwork))
         # elif uri == 'complete':
         #     self.write(str(batches_complete))
+        elif uri == 'queue':
+            self.write(str(databasequeue))
+        elif uri == 'dbcall':
+            self.write(str(activedbcallbacks))
         elif uri == 'registered':
             self.write(str(registered))
         elif uri == 'stale':
@@ -267,14 +273,9 @@ class WorkWSHandler(websocket.WebSocketHandler):
                 except StopIteration:
                     if len(stalework) == 0 and assignedworkcount == 0:
                         workdone = True
+                        logger.info('Work done')
                     return
-            await self.write_message(json_encode(
-                {
-                    'batch': work[0],
-                    'players': work[1],
-                    'realm': work[2]
-                }
-            ))
+            await self.write_message(dumps(work), True)
             assignedwork[client][work[0]] = work
             timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
@@ -293,10 +294,12 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def on_message(self, message):
         global assignedworkcount
-        global dbpool
+        global databasequeue
+        # global dbpool
         client = self.request.remote_ip
         try:
             results = loads(message)
+            # del message
         except UnpicklingError:
             # Will the clients ever send incomplete data?
             return
@@ -322,8 +325,10 @@ class WorkWSHandler(websocket.WebSocketHandler):
             assignedworkcount -= 1
             # global batches_complete
             # batches_complete += 1
-        await self.send_work()
+        databasequeue += 1
         ioloop.IOLoop.current().add_callback(send_to_database, results)
+        del results
+        await self.send_work()
 
 
 async def send_to_elasticsearch(conf):
@@ -403,6 +408,9 @@ async def send_missing_players_to_elasticsearch(conf):
 
 
 async def send_to_database(results):
+    global activedbcallbacks
+    global databasequeue
+    activedbcallbacks += 1
     async with dbpool.acquire() as conn:
         # https://stackoverflow.com/a/1109198
         _ = await conn.executemany(
@@ -414,22 +422,28 @@ async def send_to_database(results):
             ),
             tuple((*p, results[1], results[2]) for p in results[0])
         )
+    databasequeue -= 1
+    activedbcallbacks -= 1
 
 
 async def opendb(dbconf):
     global dbpool
-    dbpool = await asyncpg.create_pool(**dbconf)
+    dbpool = await create_pool(**dbconf)
 
 
 async def try_exit(config, configpath):
     if workdone:
+        if WorkWSHandler.wsconns:
+            for conn in WorkWSHandler.wsconns:
+                conn.close()
+            # logger.info('Work complete')
 
-        for conn in WorkWSHandler.wsconns:
-            conn.close()
+        if databasequeue:
+            # We still have data to send to the database. Don't exit yet.
+            return
 
+        logger.info('Proceeding with post-run cleanup')
         exitcall.stop()
-        logger.info('Work complete')
-
         update = False
         if 'expand' not in config or config['expand']:
             async with dbpool.acquire() as conn:

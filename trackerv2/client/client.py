@@ -2,9 +2,9 @@ from datetime import datetime
 import logging
 from os import mkdir
 from os.path import exists
-from pickle import dumps
+from pickle import dumps, loads
 from tornado import ioloop
-from tornado.escape import json_decode, json_encode
+from tornado.escape import json_decode  # , json_encode
 from tornado.httpclient import AsyncHTTPClient  # , HTTPRequest
 from tornado.httputil import url_concat
 from tornado.queues import Queue, QueueEmpty
@@ -72,7 +72,7 @@ class TrackerClientNode:
 
     def on_message(self, message):
         if message is not None:
-            TrackerClientNode.workqueue.put_nowait(json_decode(message))
+            TrackerClientNode.workqueue.put_nowait(loads(message))
             self.log.debug('Got work from server')
         else:
             global workdone
@@ -86,30 +86,29 @@ class TrackerClientNode:
         except QueueEmpty:
             self.log.debug('Empty queue')
             return
-        self.log.debug('Batch %i: Starting', work['batch'])
+        self.log.debug('Batch %i: Starting', work[0])
         start = datetime.now()
         params = {
-            'account_id': ','.join(map(str, range(*work['players']))),
+            'account_id': ','.join(map(str, range(*work[1]))),
             'application_id': self.key,
             'fields': TrackerClientNode.data_fields,
             'language': 'en'
         }
         url = url_concat(
-            TrackerClientNode.api_url.format(work['realm']) + 'account/info/',
+            TrackerClientNode.api_url.format(work[2]) + 'account/info/',
             params)
         try:
-            self.log.debug('Batch %i: Querying API', work['batch'])
+            self.log.debug('Batch %i: Querying API', work[0])
             response = await self.http_client.fetch(
                 url,
                 request_timeout=self.timeout)
         except HTTPTimeoutError:
             TrackerClientNode.workqueue.put_nowait(work)
-            self.log.warning('Batch %i: Timeout reached', work['batch'])
+            self.log.warning('Batch %i: Timeout reached', work[0])
         self.log.debug(
             'Batch %i: %f seconds to complete request',
-            work['batch'],
+            work[0],
             response.request_time)
-        # result = {}
         try:
             a = APIResult(
                 tuple(
@@ -123,22 +122,22 @@ class TrackerClientNode:
                     ) for __, p in json_decode(
                         response.body)['data'].items() if p),
                 response.request.start_time,
-                work['realm'],
-                work['batch'])
+                work[2],
+                work[0])
             await self.conn.write_message(dumps(a), True)
             end = datetime.now()
             self.log.debug(
                 'Batch %i: %f seconds of runtime',
-                work['batch'],
+                work[0],
                 (end - start).total_seconds())
         except ValueError:
             self.log.error(
                 'Batch %i: No data for %s',
-                work['batch'],
+                work[0],
                 json_decode(
                     response.body))
         except KeyError:
-            self.log.error('Batch %i: %s', work['batch'], response.body)
+            self.log.error('Batch %i: %s', work[0], response.body)
 
     async def connect(self):
         wsproto = 'ws' if not self.ssl else 'wss'

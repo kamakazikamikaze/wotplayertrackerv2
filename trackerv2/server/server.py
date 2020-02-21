@@ -35,9 +35,6 @@ stalework = None
 server_config = None
 received_queue = None
 registered = set()
-# batches_complete = 0
-# activedbcallbacks = 0
-# databasequeue = 0
 startwork = False
 manager = Manager()
 workdone = manager.list()
@@ -115,8 +112,6 @@ class DebugHandler(web.RequestHandler):
         #     self.write(str(batches_complete))
         elif uri == 'queue':
             self.write(str(received_queue.qsize()))
-        # elif uri == 'dbcall':
-        #     self.write(str(activedbcallbacks))
         elif uri == 'registered':
             self.write(str(registered))
         elif uri == 'stale':
@@ -261,7 +256,6 @@ class WorkWSHandler(websocket.WebSocketHandler):
         WorkWSHandler.wsconns.add(self)
 
     async def send_work(self):
-        # global workdone
         global assignedworkcount
         if not startwork:
             return
@@ -301,8 +295,6 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def on_message(self, message):
         global assignedworkcount
-        # global databasequeue
-        # global dbpool
         client = self.request.remote_ip
         try:
             results = loads(message)
@@ -331,11 +323,6 @@ class WorkWSHandler(websocket.WebSocketHandler):
         else:
             # Don't decrement count unless assigned work is removed
             assignedworkcount -= 1
-            # global batches_complete
-            # batches_complete += 1
-        # databasequeue += 1
-        # ioloop.IOLoop.current().add_callback(send_to_database, results)
-        # del results
         await self.send_work()
 
 
@@ -416,26 +403,6 @@ async def send_missing_players_to_elasticsearch(conf):
             await _send_to_cluster_skip_errors(cluster, players)
 
 
-# Previous version; do not use
-# async def send_to_database(results):
-#     global activedbcallbacks
-#     global databasequeue
-#     activedbcallbacks += 1
-#     async with dbpool.acquire() as conn:
-#         # https://stackoverflow.com/a/1109198
-#         _ = await conn.executemany(
-#             (
-#                 'SELECT upsert_player($1::int, $2::text, '
-#                 'to_timestamp($3)::timestamp, to_timestamp($4)::timestamp, '
-#                 'to_timestamp($5)::timestamp, $6::int, '
-#                 'to_timestamp($7)::timestamp, $8::text)'
-#             ),
-#             tuple((*p, results[1], results[2]) for p in results[0])
-#         )
-#     databasequeue -= 1
-#     activedbcallbacks -= 1
-
-
 async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
     logger = logging.getLogger('WoTServer')
     logger.debug('Process-%i: Async-%i created', par, chi)
@@ -471,25 +438,8 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
     logger.debug('Process-%i: Async-%i exiting', par, chi)
 
 
-# async def create_helpers(*args):
-#     await asyncio.gather(*[
-#         send_results_to_database(*args) for __ in range(3)
-#     ])
-
-
 def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
     logger = logging.getLogger('WoTServer')
-    # threads = [
-    #     Thread(
-    #         send_results_to_database,
-    #         args=(db_pool, res_queue, work_done)
-    #     ) for __ in range(3)
-    # ]
-    # for thread in threads:
-    #     thread.start()
-    # for thread in threads:
-    #     thread.join()
-
     # Not availabile until Python 3.7. Use 3.6-compatible syntax for now
     # asyncio.run(create_helpers(db_pool, res_queue, work_done))
     logger.debug('Creating event loop')
@@ -499,7 +449,6 @@ def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
         create_pool(min_size=pool_size, max_size=pool_size, **dbconf))
     logger.debug('Event loop created for Process-%i', par)
     try:
-        # loop.run_until_complete(create_helpers(db_pool, res_queue, work_done))
         loop.run_until_complete(
             asyncio.gather(*[
                 send_results_to_database(db_pool, res_queue, work_done, par, c)
@@ -519,10 +468,8 @@ async def try_exit(config, configpath):
         if WorkWSHandler.wsconns:
             for conn in WorkWSHandler.wsconns:
                 conn.close()
-            # logger.info('Work complete')
             logger.info('Released all clients')
 
-        # if databasequeue:
         if received_queue.qsize():
             # We still have data to send to the database. Don't exit yet.
             return

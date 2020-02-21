@@ -80,8 +80,9 @@ Do you have a live example?
 ===========================
 
 Unfortunately not. Previously, a live instance was running with data being sent
-to Elasticsearch for all to view. I am instead considering creating a Twitter
-bot to post daily analysis where all can view it.
+to ElasticSearch for all to view. Funding for that ceased after a few months
+when cost had to come out of pocket. I am instead considering creating a
+Twitter bot to post daily analysis where all can view it.
 
 How can I help?
 ===============

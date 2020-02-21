@@ -1,3 +1,4 @@
+import asyncio
 from asyncpg import create_pool
 from collections import deque
 from copy import copy
@@ -5,12 +6,15 @@ from datetime import datetime
 from json.decoder import JSONDecodeError
 import linecache
 import logging
+from multiprocessing import Process, Manager, cpu_count
 from os import mkdir, sep
 from os.path import join as pjoin
 from os.path import split as psplit
 from os.path import exists
 from pickle import loads, dumps, UnpicklingError
+from queue import Empty
 from sys import exit
+# from threading import Thread
 from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
 import tracemalloc
@@ -29,14 +33,17 @@ assignedworkcount = 0
 timeouts = None
 stalework = None
 server_config = None
+received_queue = None
 registered = set()
 # batches_complete = 0
-activedbcallbacks = 0
-databasequeue = 0
+# activedbcallbacks = 0
+# databasequeue = 0
 startwork = False
-workdone = False
+manager = Manager()
+workdone = manager.list()
 dbpool = None
 logger = logging.getLogger('WoTServer')
+db_helpers = None
 
 
 def _setupLogging(conf):
@@ -107,9 +114,9 @@ class DebugHandler(web.RequestHandler):
         # elif uri == 'complete':
         #     self.write(str(batches_complete))
         elif uri == 'queue':
-            self.write(str(databasequeue))
-        elif uri == 'dbcall':
-            self.write(str(activedbcallbacks))
+            self.write(str(received_queue.qsize()))
+        # elif uri == 'dbcall':
+        #     self.write(str(activedbcallbacks))
         elif uri == 'registered':
             self.write(str(registered))
         elif uri == 'stale':
@@ -254,11 +261,11 @@ class WorkWSHandler(websocket.WebSocketHandler):
         WorkWSHandler.wsconns.add(self)
 
     async def send_work(self):
-        global workdone
+        # global workdone
         global assignedworkcount
         if not startwork:
             return
-        if workdone:
+        if len(workdone):
             self.close()
             return
         client = self.request.remote_ip
@@ -272,7 +279,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
                         raise StopIteration
                 except StopIteration:
                     if len(stalework) == 0 and assignedworkcount == 0:
-                        workdone = True
+                        workdone.append(True)
                         logger.info('Work done')
                     return
             await self.write_message(dumps(work), True)
@@ -294,11 +301,12 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def on_message(self, message):
         global assignedworkcount
-        global databasequeue
+        # global databasequeue
         # global dbpool
         client = self.request.remote_ip
         try:
             results = loads(message)
+            received_queue.put_nowait(results)
             # del message
         except UnpicklingError:
             # Will the clients ever send incomplete data?
@@ -325,9 +333,9 @@ class WorkWSHandler(websocket.WebSocketHandler):
             assignedworkcount -= 1
             # global batches_complete
             # batches_complete += 1
-        databasequeue += 1
-        ioloop.IOLoop.current().add_callback(send_to_database, results)
-        del results
+        # databasequeue += 1
+        # ioloop.IOLoop.current().add_callback(send_to_database, results)
+        # del results
         await self.send_work()
 
 
@@ -359,6 +367,7 @@ async def send_to_elasticsearch(conf):
         logger.info('ES: Sending players')
         await send_data(conf, players, 'update')
         logger.info('ES: Finished')
+
 
 async def send_everything_to_elasticsearch(conf):
     async with dbpool.acquire() as conn:
@@ -407,23 +416,97 @@ async def send_missing_players_to_elasticsearch(conf):
             await _send_to_cluster_skip_errors(cluster, players)
 
 
-async def send_to_database(results):
-    global activedbcallbacks
-    global databasequeue
-    activedbcallbacks += 1
-    async with dbpool.acquire() as conn:
-        # https://stackoverflow.com/a/1109198
-        _ = await conn.executemany(
-            (
-                'SELECT upsert_player($1::int, $2::text, '
-                'to_timestamp($3)::timestamp, to_timestamp($4)::timestamp, '
-                'to_timestamp($5)::timestamp, $6::int, '
-                'to_timestamp($7)::timestamp, $8::text)'
-            ),
-            tuple((*p, results[1], results[2]) for p in results[0])
+# Previous version; do not use
+# async def send_to_database(results):
+#     global activedbcallbacks
+#     global databasequeue
+#     activedbcallbacks += 1
+#     async with dbpool.acquire() as conn:
+#         # https://stackoverflow.com/a/1109198
+#         _ = await conn.executemany(
+#             (
+#                 'SELECT upsert_player($1::int, $2::text, '
+#                 'to_timestamp($3)::timestamp, to_timestamp($4)::timestamp, '
+#                 'to_timestamp($5)::timestamp, $6::int, '
+#                 'to_timestamp($7)::timestamp, $8::text)'
+#             ),
+#             tuple((*p, results[1], results[2]) for p in results[0])
+#         )
+#     databasequeue -= 1
+#     activedbcallbacks -= 1
+
+
+async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
+    logger = logging.getLogger('WoTServer')
+    logger.debug('Process-%i: Async-%i created', par, chi)
+    while True:
+        if not res_queue.qsize():
+            if len(work_done):
+                break
+            continue
+        async with db_pool.acquire() as conn:
+            try:
+                results = res_queue.get_nowait()
+            except Empty:
+                continue
+            _ = await conn.executemany(
+                (
+                    'SELECT upsert_player('
+                    '$1::int, '
+                    '$2::text, '
+                    'to_timestamp($3)::timestamp, '
+                    'to_timestamp($4)::timestamp, '
+                    'to_timestamp($5)::timestamp, '
+                    '$6::int, '
+                    'to_timestamp($7)::timestamp, '
+                    '$8::text)'
+                ),
+                tuple((*p, results[1], results[2]) for p in results[0])
+            )
+            logger.debug(
+                'Process-%i: Async-%i submitted batch %i',
+                par,
+                chi,
+                results.batch)
+    logger.debug('Process-%i: Async-%i exiting', par, chi)
+
+
+# async def create_helpers(*args):
+#     await asyncio.gather(*[
+#         send_results_to_database(*args) for __ in range(3)
+#     ])
+
+
+def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
+    logger = logging.getLogger('WoTServer')
+    # threads = [
+    #     Thread(
+    #         send_results_to_database,
+    #         args=(db_pool, res_queue, work_done)
+    #     ) for __ in range(3)
+    # ]
+    # for thread in threads:
+    #     thread.start()
+    # for thread in threads:
+    #     thread.join()
+
+    # Not availabile until Python 3.7. Use 3.6-compatible syntax for now
+    # asyncio.run(create_helpers(db_pool, res_queue, work_done))
+    logger.debug('Creating event loop')
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    db_pool = loop.run_until_complete(
+        create_pool(min_size=pool_size, max_size=pool_size, **dbconf))
+    logger.debug('Event loop created for Process-%i', par)
+    try:
+        # loop.run_until_complete(create_helpers(db_pool, res_queue, work_done))
+        loop.run_until_complete(
+            asyncio.gather(*[
+                send_results_to_database(db_pool, res_queue, work_done, par, c)
+                for c in range(pool_size)])
         )
-    databasequeue -= 1
-    activedbcallbacks -= 1
+    finally:
+        loop.close()
 
 
 async def opendb(dbconf):
@@ -432,16 +515,19 @@ async def opendb(dbconf):
 
 
 async def try_exit(config, configpath):
-    if workdone:
+    if len(workdone):
         if WorkWSHandler.wsconns:
             for conn in WorkWSHandler.wsconns:
                 conn.close()
             # logger.info('Work complete')
+            logger.info('Released all clients')
 
-        if databasequeue:
+        # if databasequeue:
+        if received_queue.qsize():
             # We still have data to send to the database. Don't exit yet.
             return
-
+        for helper in db_helpers:
+            helper.join()
         logger.info('Proceeding with post-run cleanup')
         exitcall.stop()
         update = False
@@ -534,6 +620,18 @@ if __name__ == '__main__':
         help='Debug memory consumption issues',
         default=False,
         action='store_true')
+    agp.add_argument(
+        '-p',
+        '--processes',
+        help='Number of processes to spawn for sending results to database',
+        type=int,
+        default=(cpu_count() - 1))
+    agp.add_argument(
+        '-a',
+        '--async-helpers',
+        help='Number of asynchronous helpers to spawn per result sender',
+        type=int,
+        default=3)
     args = agp.parse_args()
 
     if args.generate_config:
@@ -547,6 +645,7 @@ if __name__ == '__main__':
     client_config = load_config(args.client_config)
 
     # Setup server
+    received_queue = manager.Queue()
     workgenerator = setup_work(server_config)
     assignedwork = nested_dd()
     timeouts = nested_dd()
@@ -570,6 +669,20 @@ if __name__ == '__main__':
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(
             lambda: try_exit(server_config, args.config), 1000)
+        db_helpers = [
+            Process(
+                target=result_handler,
+                args=(
+                    server_config['database'],
+                    received_queue,
+                    workdone,
+                    parent,
+                    args.async_helpers
+                )
+            ) for parent in range(args.processes or 1)
+        ]
+        for helper in db_helpers:
+            helper.start()
         exitcall.start()
         ioloop.IOLoop.current().start()
         end = datetime.now()
@@ -580,5 +693,7 @@ if __name__ == '__main__':
         ioloop.IOLoop.current().stop()
         try:
             exitcall.stop()
+            for helper in db_helpers:
+                helper.terminate()
         except NameError:
             pass

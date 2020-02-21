@@ -50,17 +50,38 @@ and may have a noticable performance impact. While we will try to minimize the
 noticable impact as much as possible, we do want to remind you that this is
 intended to run in a manner to finish the work as fast as possible.
 
+How powerful does the server need to be?
+========================================
+
+From experience, it is possible to run the server and database on a host with
+4 processors (no hyperthreading) and 8 GB of RAM without issue. However, some
+settings may need to be changed in order to prevent the server from crashing
+due to a consumption of memory from results waiting to be sent to the database.
+
+When you run the server-side of this project, please set the following flags:
+
+============== =========
+CPUs available ``-a`` 
+============== =========
+1              10
+2              5
+4+             Don't set
+============== =========
+
+If you use multiple querying clients to collect data, you will need to be able
+to scale the server as well. If you are stuck with a limited number of
+resources, you can use the ``-a`` flag and increase the number of helpers per
+process spawned. If you have a different server for your database, you can also
+increase the number of processes using the ``-p`` flag (defaults to number of
+physical cores + virtual cores - 1), though I would increase both of these
+incrementally.
+
 Do you have a live example?
 ===========================
 
-A public-facing server is available at https://tanks.kamikaze.codes. Please
-note that you need the following to login in:
-
-* User: `guest`
-* Pass: `wargaming`
-
-Please do not abuse the account by changing the password. This is shared by
-everyone in the community.
+Unfortunately not. Previously, a live instance was running with data being sent
+to Elasticsearch for all to view. I am instead considering creating a Twitter
+bot to post daily analysis where all can view it.
 
 How can I help?
 ===============
@@ -68,9 +89,8 @@ How can I help?
 If you'd like to volunteer some processing power, send an email to
 wotbattletracker@gmail.com.
 
-If you'd like to contribute to the ElasticSearch/Kibana service, please
-consider leaving a donation. All contributions go towards costs of the Elastic
-Cloud service.
+If you'd like to donate for the time I've put into this project, feel free to
+leave any amount at the following PayPal link.
 
 .. image:: https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif
    :target: https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=RNZ669CEAQCJY

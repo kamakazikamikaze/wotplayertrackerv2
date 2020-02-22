@@ -1,5 +1,5 @@
 from elasticsearch import Elasticsearch, helpers
-from elasticsearch import TransportError
+from elasticsearch import TransportError, ConnectionTimeout
 from elasticsearch.helpers import BulkIndexError
 import json
 from uuid import uuid4
@@ -53,11 +53,12 @@ async def _send_to_cluster(conf, data):
     helpers.bulk(es, data)
 
 
-async def _send_to_cluster_skip_errors(conf, data):
+async def _send_to_cluster_skip_errors(conf, data, retry=5):
     r"""
     Stream data to an Elasticsearch cluster.
     :param dict conf: Connection parameters for `elasticsearch.Elasticsearch`
     :param list(dict) data: ES documents to send
+    :param int retry: Number of times to retry sending a batch if error occurs
     """
     def chunks(l, n):
         n = max(1, n)
@@ -68,10 +69,13 @@ async def _send_to_cluster_skip_errors(conf, data):
     elif isinstance(data, AsyncGeneratorType):
         data = [d async for d in data]
     for chunk in chunks(data, 100):
-        try:
-            helpers.bulk(es, data)
-        except BulkIndexError:
-            pass
+        attempts = retry
+        while attempts:
+            try:
+                helpers.bulk(es, data)
+                break
+            except (BulkIndexError, ConnectionTimeout):
+                attempts -= 1
 
 
 async def _update_to_cluster(conf, data):
@@ -83,8 +87,8 @@ async def _update_to_cluster(conf, data):
                     index=doc['_index'],
                     doc_type=doc['_type'],
                     id=doc['_id'],
-                    body={
-                        'doc': doc['_source']})
+                    body={'doc': doc['_source']}
+                )
             except TransportError as te:
                 if te.args[1] == 'document_missing_exception':
                     helpers.bulk(es, [doc])
@@ -97,8 +101,7 @@ async def _update_to_cluster(conf, data):
                     index=doc['_index'],
                     doc_type=doc['_type'],
                     id=doc['_id'],
-                    body={
-                        'doc': doc['_source']})
+                    body={'doc': doc['_source']})
             except TransportError as te:
                 if te.args[1] == 'document_missing_exception':
                     helpers.bulk(es, [doc])

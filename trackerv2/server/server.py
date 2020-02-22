@@ -1,5 +1,5 @@
 import asyncio
-from asyncpg import create_pool
+from asyncpg import create_pool, connect
 from collections import deque
 from copy import copy
 from datetime import datetime
@@ -38,7 +38,6 @@ registered = set()
 startwork = False
 manager = Manager()
 workdone = manager.list()
-dbpool = None
 logger = logging.getLogger('WoTServer')
 db_helpers = None
 
@@ -326,81 +325,77 @@ class WorkWSHandler(websocket.WebSocketHandler):
         await self.send_work()
 
 
-async def send_to_elasticsearch(conf):
+async def send_to_elasticsearch(conf, conn):
     r"""
     Send updates to Elasticsearch.
 
     This method should be called once work has concluded.
     """
     today = datetime.utcnow()
-    async with dbpool.acquire() as conn:
-        totals = create_generator_totals(
-            today,
-            await conn.fetch('SELECT * FROM total_battles_{}'.format(
-                today.strftime('%Y_%m_%d'))))
-        logger.info('ES: Sending totals')
-        await send_data(conf, totals)
-        diffs = create_generator_diffs(
-            today,
-            await conn.fetch('SELECT * FROM diff_battles_{}'.format(
-                today.strftime('%Y_%m_%d'))))
-        logger.info('ES: Sending diffs')
-        await send_data(conf, diffs)
-        player_ids = set.union(
-            set(map(lambda p: int(p['_source']['account_id']), totals)),
-            set(map(lambda p: int(p['_source']['account_id']), diffs)))
-        stmt = await conn.prepare('SELECT * FROM players WHERE account_id=$1')
-        players = create_generator_players(stmt, player_ids)
-        logger.info('ES: Sending players')
-        await send_data(conf, players, 'update')
-        logger.info('ES: Finished')
+    totals = create_generator_totals(
+        today,
+        await conn.fetch('SELECT * FROM total_battles_{}'.format(
+            today.strftime('%Y_%m_%d'))))
+    logger.info('ES: Sending totals')
+    await send_data(conf, totals)
+    diffs = create_generator_diffs(
+        today,
+        await conn.fetch('SELECT * FROM diff_battles_{}'.format(
+            today.strftime('%Y_%m_%d'))))
+    logger.info('ES: Sending diffs')
+    await send_data(conf, diffs)
+    player_ids = set.union(
+        set(map(lambda p: int(p['_source']['account_id']), totals)),
+        set(map(lambda p: int(p['_source']['account_id']), diffs)))
+    stmt = await conn.prepare('SELECT * FROM players WHERE account_id=$1')
+    players = create_generator_players(stmt, player_ids)
+    logger.info('ES: Sending players')
+    await send_data(conf, players, 'update')
+    logger.info('ES: Finished')
 
 
-async def send_everything_to_elasticsearch(conf):
-    async with dbpool.acquire() as conn:
-        tables = await conn.fetch(
-            (
-                "SELECT table_name FROM information_schema.tables WHERE "
-                "table_schema='public' AND table_type='BASE TABLE'"
-            )
+async def send_everything_to_elasticsearch(conf, conn):
+    tables = await conn.fetch(
+        (
+            "SELECT table_name FROM information_schema.tables WHERE "
+            "table_schema='public' AND table_type='BASE TABLE'"
         )
-        for table in tables:
-            logger.info('ES: Sending %s', table['table_name'])
-            if 'diff' in table['table_name']:
-                diffs = create_generator_diffs(
-                    datetime.strptime(
-                        table['table_name'],
-                        'diff_battles_%Y_%m_%d'),
-                    await conn.fetch(
-                        'SELECT * from {}'.format(table['table_name'])))
-                await send_data(conf, diffs)
-            elif 'total' in table['table_name']:
-                totals = create_generator_totals(
-                    datetime.strptime(
-                        table['table_name'],
-                        'total_battles_%Y_%m_%d'),
-                    await conn.fetch(
-                        'SELECT * from {}'.format(table['table_name'])))
-                await send_data(conf, totals)
-            elif 'players' in table['table_name']:
-                players = create_generator_players_sync(
-                    await conn.fetch('SELECT * FROM players'))
-                await send_data(conf, players)
+    )
+    for table in tables:
+        logger.info('ES: Sending %s', table['table_name'])
+        if 'diff' in table['table_name']:
+            diffs = create_generator_diffs(
+                datetime.strptime(
+                    table['table_name'],
+                    'diff_battles_%Y_%m_%d'),
+                await conn.fetch(
+                    'SELECT * from {}'.format(table['table_name'])))
+            await send_data(conf, diffs)
+        elif 'total' in table['table_name']:
+            totals = create_generator_totals(
+                datetime.strptime(
+                    table['table_name'],
+                    'total_battles_%Y_%m_%d'),
+                await conn.fetch(
+                    'SELECT * from {}'.format(table['table_name'])))
+            await send_data(conf, totals)
+        elif 'players' in table['table_name']:
+            players = create_generator_players_sync(
+                await conn.fetch('SELECT * FROM players'))
+            await send_data(conf, players)
 
 
-async def send_missing_players_to_elasticsearch(conf):
+async def send_missing_players_to_elasticsearch(conf, conn):
     r"""
     Synchronizes players from an existing database to Elasticsearch.
 
     Only updated players have information sent to ES. If a new cluster
     is added, it will not have all players in it as a result.
     """
-    today = datetime.utcnow()
-    async with dbpool.acquire() as conn:
-        players = [p for p in create_generator_players_sync(
-            await conn.fetch('SELECT * FROM players'))]
-        for name, cluster in conf['elasticsearch']['clusters'].items():
-            await _send_to_cluster_skip_errors(cluster, players)
+    players = [p for p in create_generator_players_sync(
+        await conn.fetch('SELECT * FROM players'))]
+    for name, cluster in conf['elasticsearch']['clusters'].items():
+        await _send_to_cluster_skip_errors(cluster, players)
 
 
 async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
@@ -458,11 +453,6 @@ def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
         loop.close()
 
 
-async def opendb(dbconf):
-    global dbpool
-    dbpool = await create_pool(**dbconf)
-
-
 async def try_exit(config, configpath):
     if len(workdone):
         if WorkWSHandler.wsconns:
@@ -478,45 +468,45 @@ async def try_exit(config, configpath):
         logger.info('Proceeding with post-run cleanup')
         exitcall.stop()
         update = False
+        conn = await connect(**config['database'])
         if 'expand' not in config or config['expand']:
-            async with dbpool.acquire() as conn:
-                maximum = await conn.fetch(
-                    (
-                        'SELECT MAX(account_id), console FROM '
-                        'players GROUP BY console'
-                    )
+            maximum = await conn.fetch(
+                (
+                    'SELECT MAX(account_id), console FROM '
+                    'players GROUP BY console'
                 )
-                for record in maximum:
-                    if record['console'] == 'xbox':
-                        max_xbox = record['max']
-                    else:
-                        max_ps4 = record['max']
+            )
+            for record in maximum:
+                if record['console'] == 'xbox':
+                    max_xbox = record['max']
+                else:
+                    max_ps4 = record['max']
 
-                if 'max account' not in config['xbox']:
-                    config['xbox']['max account'] = max_xbox + 200000
-                    update = True
-                elif config['xbox']['max account'] - max_xbox < 50000:
-                    config['xbox']['max account'] += 100000
-                    update = True
-                if 'max account' not in config['ps4']:
-                    config['ps4']['max account'] = max_ps4 + 200000
-                    update = True
-                elif config['ps4']['max account'] - max_ps4 < 50000:
-                    config['ps4']['max account'] += 100000
-                    update = True
+            if 'max account' not in config['xbox']:
+                config['xbox']['max account'] = max_xbox + 200000
+                update = True
+            elif config['xbox']['max account'] - max_xbox < 50000:
+                config['xbox']['max account'] += 100000
+                update = True
+            if 'max account' not in config['ps4']:
+                config['ps4']['max account'] = max_ps4 + 200000
+                update = True
+            elif config['ps4']['max account'] - max_ps4 < 50000:
+                config['ps4']['max account'] += 100000
+                update = True
 
-                logger.info('Checking database to expand players')
-                if update:
-                    logger.info('Expanding max player configuration.')
-                    logger.debug('Max Xbox account: %i', max_xbox)
-                    logger.debug('Max PS4 account: %i', max_ps4)
-                    write_config(config, configpath)
+            logger.info('Checking database to expand players')
+            if update:
+                logger.info('Expanding max player configuration.')
+                logger.debug('Max Xbox account: %i', max_xbox)
+                logger.debug('Max PS4 account: %i', max_ps4)
+                write_config(config, configpath)
         else:
             logger.debug('Not expanding player ID range')
 
         if 'elasticsearch' in config:
             logger.info('Sending data to Elasticsearch')
-            await send_to_elasticsearch(config)
+            await send_to_elasticsearch(config, conn)
 
         logger.info('Shutting down server')
         ioloop.IOLoop.current().stop()
@@ -610,8 +600,8 @@ if __name__ == '__main__':
         start = datetime.now()
         ioloop.IOLoop.current().run_sync(
             lambda: setup_database(server_config['database']))
-        ioloop.IOLoop.current().run_sync(
-            lambda: opendb(server_config['database']))
+        # ioloop.IOLoop.current().run_sync(
+        #     lambda: opendb(server_config['database']))
         app = make_app(static_files, server_config, client_config)
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(

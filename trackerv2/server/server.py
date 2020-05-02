@@ -1,7 +1,6 @@
 import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
-from copy import copy
 from datetime import datetime
 from json.decoder import JSONDecodeError
 import linecache
@@ -14,7 +13,6 @@ from os.path import exists
 from pickle import loads, dumps, UnpicklingError
 from queue import Empty
 from sys import exit
-# from threading import Thread
 from tornado import ioloop, web, websocket
 from tornado.escape import json_decode, json_encode
 import tracemalloc
@@ -24,12 +22,15 @@ from sendtoindexer import create_generator_diffs, create_generator_players
 from sendtoindexer import create_generator_players_sync, send_data
 from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
+# Import APIResult and Player as we will unpickle them. Ignore unused warnings
 from utils import create_client_config, create_server_config, APIResult, Player
-from work import setup_work
+from work import setup_work, calculate_total_batches
 
 workgenerator = None
 assignedwork = None
 assignedworkcount = 0
+completedcount = 0
+totalbatches = 0
 timeouts = None
 stalework = None
 server_config = None
@@ -107,8 +108,8 @@ class DebugHandler(web.RequestHandler):
             self.write(json_encode(hashes))
         elif uri == 'work':
             self.write(json_encode(assignedwork))
-        # elif uri == 'complete':
-        #     self.write(str(batches_complete))
+        elif uri == 'complete':
+            self.write('{} of {}'.format(completedcount, totalbatches))
         elif uri == 'queue':
             self.write(str(received_queue.qsize()))
         elif uri == 'registered':
@@ -165,7 +166,8 @@ class TraceHandler(web.RequestHandler):
                 frame = stat.traceback[0]
                 filename = sep.join(frame.filename.split(sep)[-2:])
                 output.append('#%s: %s:%s: %1.1f KiB<br />' %
-                              (index, filename, frame.lineno, stat.size / 1024))
+                              (index, filename, frame.lineno, stat.size / 1024)
+                              )
                 line = linecache.getline(frame.filename, frame.lineno).strip()
                 if line:
                     output.append('&nbsp;&nbsp;&nbsp;&nbsp;%s<br />' % line)
@@ -294,6 +296,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def on_message(self, message):
         global assignedworkcount
+        global completedcount
         client = self.request.remote_ip
         try:
             results = loads(message)
@@ -322,6 +325,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
         else:
             # Don't decrement count unless assigned work is removed
             assignedworkcount -= 1
+        completedcount += 1
         await self.send_work()
 
 
@@ -584,6 +588,7 @@ if __name__ == '__main__':
     # Setup server
     received_queue = manager.Queue()
     workgenerator = setup_work(server_config)
+    totalbatches = calculate_total_batches(server_config)
     assignedwork = nested_dd()
     timeouts = nested_dd()
     stalework = deque()
@@ -621,6 +626,7 @@ if __name__ == '__main__':
         for helper in db_helpers:
             helper.start()
         exitcall.start()
+        logger.info('Starting server')
         ioloop.IOLoop.current().start()
         end = datetime.now()
         logger.info('Finished')

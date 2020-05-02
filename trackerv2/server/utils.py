@@ -6,6 +6,8 @@ from os.path import join as pjoin
 from uuid import NAMESPACE_DNS, uuid5
 from typing import NamedTuple
 
+from constants import XBOX_MIN, XBOX_MAX, PS4_MIN, PS4_MAX
+
 BUF_SIZE = 65536
 
 
@@ -71,12 +73,12 @@ def create_server_config(filename='./config/server.json'):
         },
         'language': 'en',
         'xbox': {
-            'start account': 5000,
-            'max account': 15200000
+            'start account': XBOX_MIN,
+            'max account': XBOX_MAX
         },
         'ps4': {
-            'start account': 1073740000,
-            'max account': 1083200000
+            'start account': PS4_MIN,
+            'max account': PS4_MAX
         },
         'expand': True,
         'max retries': 5,

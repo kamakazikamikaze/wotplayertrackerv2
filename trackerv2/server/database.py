@@ -76,8 +76,8 @@ async def setup_database(db):
                 LOOP
                     -- first, try to update the key
                     UPDATE players SET (last_battle_time, updated_at, battles,
-                        _last_api_pull) = (l_b_t, u_at, b, _l_a_p)
-                        WHERE account_id = a_id;
+                        _last_api_pull, nickname) = (l_b_t, u_at, b, _l_a_p,
+                        nick) WHERE account_id = a_id;
                     IF found THEN
                         RETURN;
                     END IF;

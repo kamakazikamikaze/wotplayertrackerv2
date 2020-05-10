@@ -102,13 +102,14 @@ class TrackerClientNode:
             response = await self.http_client.fetch(
                 url,
                 request_timeout=self.timeout)
+            self.log.debug(
+                'Batch %i: %f seconds to complete request',
+                work[0],
+                response.request_time)
         except HTTPTimeoutError:
             TrackerClientNode.workqueue.put_nowait(work)
             self.log.warning('Batch %i: Timeout reached', work[0])
-        self.log.debug(
-            'Batch %i: %f seconds to complete request',
-            work[0],
-            response.request_time)
+            return
         try:
             a = APIResult(
                 tuple(

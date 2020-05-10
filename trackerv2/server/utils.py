@@ -1,5 +1,6 @@
 from collections import defaultdict
 from hashlib import sha1
+from ipaddress import ip_network
 from json import load, dump
 from os import walk
 from os.path import join as pjoin
@@ -11,7 +12,7 @@ from constants import XBOX_MIN, XBOX_MAX, PS4_MIN, PS4_MAX
 BUF_SIZE = 65536
 
 
-def getsha1(filename):
+def getsha1(filename : str) -> str:
     sha1hash = sha1()
     with open(filename, 'rb') as f:
         while True:
@@ -22,11 +23,11 @@ def getsha1(filename):
     return sha1hash.hexdigest()
 
 
-def genuuid(ip):
+def genuuid(ip : str) -> str:
     return str(uuid5(NAMESPACE_DNS, ip))
 
 
-def genhashes(dirpath='./files'):
+def genhashes(dirpath : str = './files') -> dict:
     hashes = {}
     for _, dirs, _ in walk(dirpath):
         for d in dirs:
@@ -37,17 +38,17 @@ def genhashes(dirpath='./files'):
     return hashes
 
 
-def load_config(filename='./config/server.json'):
+def load_config(filename : str='./config/server.json') -> dict:
     with open(filename) as f:
         return load(f)
 
 
-def write_config(config, filename='./config/server.json'):
+def write_config(config : dict, filename : str = './config/server.json'):
     with open(filename, 'w') as f:
         dump(config, f, indent=4)
 
 
-def create_client_config(filename='./config/client.json'):
+def create_client_config(filename : str = './config/client.json'):
     config = {
         'application_id': 'demo',
         'throttle': 10,
@@ -58,7 +59,7 @@ def create_client_config(filename='./config/client.json'):
     write_config(config, filename)
 
 
-def create_server_config(filename='./config/server.json'):
+def create_server_config(filename : str = './config/server.json'):
     newconfig = {
         'application_id': {
             'catchall': {
@@ -114,7 +115,8 @@ def create_server_config(filename='./config/server.json'):
                 'delete old index on reload': True,
                 'index': '/srv/battletrackerv2/offload/index.txt'
             }
-        }
+        },
+        'debug access': ['127.0.0.1']
     }
     with open(filename, 'w') as f:
         dump(newconfig, f, indent=4)
@@ -138,3 +140,17 @@ class APIResult(NamedTuple):
     last_api_pull: int
     console: str
     batch: int
+
+def expand_debug_access_ips(config : dict) -> list:
+    if 'debug access' not in config:
+        return [ip_network('127.0.0.1')]
+    converted = []
+    for network in config['debug access']:
+        try:
+            # This will work for any valid IP address
+            address = ip_network(network)
+        except ValueError:
+            # Just skip any errors
+            continue
+        converted.append(address)
+    return converted

@@ -2,6 +2,7 @@ import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
 from datetime import datetime
+from ipaddress import ip_address
 from json.decoder import JSONDecodeError
 import linecache
 import logging
@@ -10,7 +11,7 @@ from os import mkdir, sep
 from os.path import join as pjoin
 from os.path import split as psplit
 from os.path import exists
-from pickle import loads, dumps, UnpicklingError
+from pickle import loads, dumps, UnpicklingError, load, dump, HIGHEST_PROTOCOL
 from queue import Empty
 from sys import exit
 from tornado import ioloop, web, websocket
@@ -24,9 +25,11 @@ from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
 # Import APIResult and Player as we will unpickle them. Ignore unused warnings
 from utils import create_client_config, create_server_config, APIResult, Player
+from utils import expand_debug_access_ips
 from work import setup_work, calculate_total_batches
 
 workgenerator = None
+workpop = 0
 assignedwork = None
 assignedworkcount = 0
 completedcount = 0
@@ -37,10 +40,9 @@ server_config = None
 received_queue = None
 registered = set()
 startwork = False
-manager = Manager()
-workdone = manager.list()
 logger = logging.getLogger('WoTServer')
 db_helpers = None
+allowed_debug = None
 
 
 def _setupLogging(conf):
@@ -102,6 +104,14 @@ class DebugHandler(web.RequestHandler):
     """
 
     def get(self, uri=None):
+        source_ip = ip_address(self.request.remote_ip)
+        if not any(source_ip in network for network in allowed_debug):
+            self.set_status(400)
+            logger.info(
+                'Unauthorized host %s attempted to access debug panel',
+                self.request.remote_ip
+            )
+            return
         if uri is None:
             return
         if uri == 'hashes':
@@ -118,6 +128,18 @@ class DebugHandler(web.RequestHandler):
             self.write(str(stalework))
         elif uri == 'assignedcount':
             self.write(str(assignedworkcount))
+        elif uri == 'dump':
+            try:
+                now = datetime.utcnow()
+                with open(now.strftime('recovery-%Y-%m-%d.dump'), 'wb') as f:
+                    dump(
+                        [workpop, completedcount, stalework],
+                        f,
+                        HIGHEST_PROTOCOL
+                    )
+                self.write('Dump successful')
+            except Exception as e:
+                self.write('Exception occurred: {}'.format(e))
         else:
             self.write('No debug output for: ' + uri)
 
@@ -258,6 +280,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def send_work(self):
         global assignedworkcount
+        global workpop
         if not startwork:
             return
         if len(workdone):
@@ -270,6 +293,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
             except IndexError:
                 try:
                     work = next(workgenerator)
+                    workpop += 1
                     if work is None:
                         raise StopIteration
                 except StopIteration:
@@ -573,6 +597,11 @@ if __name__ == '__main__':
         help='Number of asynchronous helpers to spawn per result sender',
         type=int,
         default=3)
+    agp.add_argument(
+        '-r',
+        '--recover',
+        help='Recover server from a previous dump state',
+        type=str)
     args = agp.parse_args()
 
     if args.generate_config:
@@ -586,6 +615,8 @@ if __name__ == '__main__':
     client_config = load_config(args.client_config)
 
     # Setup server
+    manager = Manager()
+    workdone = manager.list()
     received_queue = manager.Queue()
     workgenerator = setup_work(server_config)
     totalbatches = calculate_total_batches(server_config)
@@ -594,6 +625,7 @@ if __name__ == '__main__':
     stalework = deque()
     hashes = genhashes(static_files)
     client_config['files'] = list(hashes['win'].keys())
+    allowed_debug = expand_debug_access_ips(server_config)
     # TODO: Create a timer to change startwork
     startwork = True
     _setupLogging(server_config)
@@ -601,12 +633,19 @@ if __name__ == '__main__':
         logger.debug('Starting memory trace')
         tracemalloc.start()
 
+    if args.recover:
+        with open(args.recover, 'rb') as f:
+            workpop, completedcount, stalework = load(f)
+            for __ in range(workpop):
+                __ = next(workgenerator)
+
     try:
         start = datetime.now()
-        ioloop.IOLoop.current().run_sync(
-            lambda: setup_database(server_config['database']))
-        # ioloop.IOLoop.current().run_sync(
-        #     lambda: opendb(server_config['database']))
+        # Don't set up tables when recovering. We have explicitly coded to exit
+        # if the tables already exist. Not sure if we need to modify this
+        if not args.recover:
+            ioloop.IOLoop.current().run_sync(
+                lambda: setup_database(server_config['database']))
         app = make_app(static_files, server_config, client_config)
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(

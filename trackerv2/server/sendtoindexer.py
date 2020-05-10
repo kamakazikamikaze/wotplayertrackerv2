@@ -72,9 +72,9 @@ async def _send_to_cluster_skip_errors(conf, data, retry=5):
         attempts = retry
         while attempts:
             try:
-                helpers.bulk(es, data)
+                helpers.bulk(es, chunk)
                 break
-            except (BulkIndexError, ConnectionTimeout):
+            except:
                 attempts -= 1
 
 

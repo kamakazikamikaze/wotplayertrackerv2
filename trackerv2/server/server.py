@@ -429,19 +429,80 @@ async def send_missing_players_to_elasticsearch(conf, conn):
 async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
     logger = logging.getLogger('WoTServer')
     logger.debug('Process-%i: Async-%i created', par, chi)
+    # I assumed that a prepare statement would reduce memory consumption,
+    # however the amount of cached memory being used on the server grew much
+    # faster compared to the original method. Keeping here for one commit
+    # before removal for archival reasons.
+    # async with db_pool.acquire() as conn:
+    #     stmt = await conn.prepare(
+    #         (
+    #             'INSERT INTO players ('
+    #             'account_id, nickname, created_at, last_battle_time,'
+    #             'updated_at, battles, _last_api_pull, console)'
+    #             'VALUES ('
+    #             '$1::int, '
+    #             '$2::text, '
+    #             'to_timestamp($3)::timestamp, '
+    #             'to_timestamp($4)::timestamp, '
+    #             'to_timestamp($5)::timestamp, '
+    #             '$6::int, '
+    #             'to_timestamp($7)::timestamp, '
+    #             '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+    #             'nickname, last_battle_time, updated_at, battles, '
+    #             '_last_api_pull) = ('
+    #             '$2::text, '
+    #             'to_timestamp($4)::timestamp, '
+    #             'to_timestamp($5)::timestamp, '
+    #             '$6::int, '
+    #             'to_timestamp($7)::timestamp)'
+    #         )
+    #     )
+    #     while True:
+    #         if not res_queue.qsize():
+    #             if len(work_done):
+    #                 break
+    #             continue
+    #         try:
+    #             results = res_queue.get_nowait()
+    #         except Empty:
+    #             continue
+    #         for p in results[0]:
+    #             _ = await stmt.fetchrow(*p, results[1], results[2])
+    #         logger.debug(
+    #             'Process-%i: Async-%i submitted batch %i',
+    #             par,
+    #             chi,
+    #             results.batch)
     while True:
         if not res_queue.qsize():
             if len(work_done):
                 break
             continue
+        # Use the async here instead of before the `while` statement. Failure
+        # to do so can pin to a specific helper waiting for work instead of
+        # context switching to another that already has something to process
         async with db_pool.acquire() as conn:
             try:
                 results = res_queue.get_nowait()
             except Empty:
                 continue
             _ = await conn.executemany(
+                # (
+                #     'SELECT upsert_player('
+                #     '$1::int, '
+                #     '$2::text, '
+                #     'to_timestamp($3)::timestamp, '
+                #     'to_timestamp($4)::timestamp, '
+                #     'to_timestamp($5)::timestamp, '
+                #     '$6::int, '
+                #     'to_timestamp($7)::timestamp, '
+                #     '$8::text)'
+                # ),
                 (
-                    'SELECT upsert_player('
+                    'INSERT INTO players ('
+                    'account_id, nickname, created_at, last_battle_time,'
+                    'updated_at, battles, _last_api_pull, console)'
+                    'VALUES ('
                     '$1::int, '
                     '$2::text, '
                     'to_timestamp($3)::timestamp, '
@@ -449,7 +510,14 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                     'to_timestamp($5)::timestamp, '
                     '$6::int, '
                     'to_timestamp($7)::timestamp, '
-                    '$8::text)'
+                    '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+                    'nickname, last_battle_time, updated_at, battles, '
+                    '_last_api_pull) = ('
+                    '$2::text, '
+                    'to_timestamp($4)::timestamp, '
+                    'to_timestamp($5)::timestamp, '
+                    '$6::int, '
+                    'to_timestamp($7)::timestamp)'
                 ),
                 tuple((*p, results[1], results[2]) for p in results[0])
             )

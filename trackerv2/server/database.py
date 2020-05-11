@@ -35,8 +35,8 @@ async def setup_database(db):
             $func$
             BEGIN
                IF (OLD.battles < NEW.battles) THEN
-                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
                END IF;
                RETURN NEW;
             END
@@ -51,7 +51,7 @@ async def setup_database(db):
               RETURNS trigger AS
             $func$
             BEGIN
-              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;

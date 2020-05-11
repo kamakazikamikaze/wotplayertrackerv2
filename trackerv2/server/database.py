@@ -28,6 +28,7 @@ async def setup_database(db):
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
 
+    # We shouldn't get a duplicate error because of the REPLACE statement
     try:
         _ = await conn.execute('''
             CREATE OR REPLACE FUNCTION update_total()
@@ -40,11 +41,16 @@ async def setup_database(db):
                END IF;
                RETURN NEW;
             END
-            $func$ LANGUAGE plpgsql;
-            CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();''')
+            $func$ LANGUAGE plpgsql;''')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
+    try:
+        _ = await conn.execute('CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
+
+    # We shouldn't get a duplicate error because of the REPLACE statement
     try:
         _ = await conn.execute('''
             CREATE OR REPLACE FUNCTION new_player()
@@ -54,8 +60,12 @@ async def setup_database(db):
               EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               RETURN NEW;
             END
-            $func$ LANGUAGE plpgsql;
-            CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();''')
+            $func$ LANGUAGE plpgsql;''')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
+
+    try:
+        _ = await conn.execute('CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 

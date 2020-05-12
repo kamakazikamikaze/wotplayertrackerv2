@@ -41,18 +41,19 @@ received_queue = None
 registered = set()
 startwork = False
 logger = logging.getLogger('WoTServer')
+telelogger = logging.getLogger('Telemetry')
 db_helpers = None
 allowed_debug = None
 
 
 def _setupLogging(conf):
-    formatter = logging.Formatter(
-        '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
-        datefmt='%m-%d %H:%M:%S')
     if 'logging' in conf:
-        pardir = psplit(conf['logging']['file'])[0]
-        if not exists(pardir):
-            mkdir(pardir)
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
+            datefmt='%m-%d %H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
         ch = logging.StreamHandler()
         if conf['logging']['level'].lower() == 'debug':
             level = logging.DEBUG
@@ -77,6 +78,26 @@ def _setupLogging(conf):
         nu = logging.NullHandler()
         logger.addHandler(nu)
         logger.setLevel(logging.ERROR)
+
+    if 'telemetry' in conf:
+        telelogger.propagate = False
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d,%(message)s',
+            datefmt='%H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
+        fh = logging.FileHandler(
+            datetime.now().strftime(conf['telemetry']['file']))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        telelogger.addHandler(fh)
+        telelogger.setLevel(logging.DEBUG)
+        telelogger.debug('IP,Completed,Timeouts,Errors')
+    else:
+        nu = logging.NullHandler()
+        telelogger.addHandler(nu)
+        telelogger.setLevel(logging.ERROR)
 
 
 def move_to_stale(ipaddress, work):
@@ -114,7 +135,7 @@ class DebugHandler(web.RequestHandler):
             return
         if uri is None:
             return
-        if uri == 'hashes':
+        elif uri == 'hashes':
             self.write(json_encode(hashes))
         elif uri == 'work':
             self.write(json_encode(assignedwork))
@@ -160,10 +181,8 @@ class UpdateHandler(web.RequestHandler):
                 self.set_status(204)
             else:
                 self.redirect(
-                    '/files/' +
-                    client['os'] +
-                    '/' +
-                    client['filename'])
+                    '/files/' + client['os'] + '/' + client['filename']
+                )
 
 
 class TraceHandler(web.RequestHandler):
@@ -199,15 +218,6 @@ class TraceHandler(web.RequestHandler):
                 '</body></html>')
         else:
             self.set_status(404)
-
-
-class StatusHandler(web.RequestHandler):
-    r"""
-    Reviewing progress of the current run or connected clients
-    """
-
-    def get(self):
-        pass
 
 
 class SetupHandler(web.RequestHandler):
@@ -353,6 +363,23 @@ class WorkWSHandler(websocket.WebSocketHandler):
         await self.send_work()
 
 
+class TelemetryWSHandler(websocket.WebSocketHandler):
+    r"""
+    Endpoint for receiving debugging/statistical data.
+
+    This endpoint is to be used for collecting performance metrics only, such
+    as retry count, completed batches, and
+    """
+
+    def open(self, *args, **kwargs):
+        if self.request.remote_ip not in registered:
+            self.close()
+            return
+
+    def on_message(self, message):
+        telelogger.debug(genuuid(self.request.remote_ip) + message)
+
+
 async def send_to_elasticsearch(conf, conn):
     r"""
     Send updates to Elasticsearch.
@@ -442,7 +469,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                 results = res_queue.get_nowait()
             except Empty:
                 continue
-            _ = await conn.executemany(
+            __ = await conn.executemany(
                 (
                     'INSERT INTO players ('
                     'account_id, nickname, created_at, last_battle_time,'
@@ -559,8 +586,8 @@ def make_app(sfiles, serverconfig, clientconfig):
         (r"/setup", SetupHandler,
          dict(serverconfig=serverconfig, clientconfig=clientconfig)),
         (r"/updates", UpdateHandler),
-        (r"/wswork", WorkWSHandler),
-        (r"/status", StatusHandler),
+        (r"/work", WorkWSHandler),
+        (r"/telemetry", TelemetryWSHandler),
         (r"/debug/([^/]*)", DebugHandler),
         (r"/trace/([^/]*)", TraceHandler),
         (r"/files/nix/([^/]*)", web.StaticFileHandler,
@@ -626,6 +653,17 @@ if __name__ == '__main__':
     static_files = args.static_files
     server_config = load_config(args.config)
     client_config = load_config(args.client_config)
+    if 'telemetry' in server_config:
+        if 'interval' in server_config['telemetry']:
+            client_config['telemetry'] = server_config['telemetry']['interval']
+        else:
+            # Default to 10 seconds
+            client_config['telemetry'] = 10000
+    else:
+        try:
+            del client_config['telemetry']
+        except KeyError:
+            pass
 
     # Setup server
     manager = Manager()

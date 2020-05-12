@@ -5,7 +5,7 @@ import json
 
 async def setup_database(db):
     conn = await asyncpg.connect(**db)
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE IF NOT EXISTS players (
             account_id integer PRIMARY KEY,
             nickname varchar(34) NOT NULL,
@@ -16,21 +16,21 @@ async def setup_database(db):
             battles integer NOT NULL,
             _last_api_pull timestamp NOT NULL)''')
 
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(
         datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
     )
 
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
 
     # We shouldn't get a duplicate error because of the REPLACE statement
     try:
-        _ = await conn.execute('''
+        __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION update_total()
               RETURNS trigger AS
             $func$
@@ -46,13 +46,13 @@ async def setup_database(db):
         pass
 
     try:
-        _ = await conn.execute('CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();')
+        __ = await conn.execute('CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
     # We shouldn't get a duplicate error because of the REPLACE statement
     try:
-        _ = await conn.execute('''
+        __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION new_player()
               RETURNS trigger AS
             $func$
@@ -65,7 +65,7 @@ async def setup_database(db):
         pass
 
     try:
-        _ = await conn.execute('CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();')
+        __ = await conn.execute('CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 

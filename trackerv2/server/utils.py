@@ -32,7 +32,7 @@ def genhashes(dirpath : str = './files') -> dict:
     for _, dirs, _ in walk(dirpath):
         for d in dirs:
             hashes[d] = {}
-            for _, _, files in walk(pjoin(dirpath, d)):
+            for __, __, files in walk(pjoin(dirpath, d)):
                 for fi in files:
                     hashes[d][fi] = getsha1(pjoin(dirpath, d, fi))
     return hashes
@@ -53,9 +53,11 @@ def create_client_config(filename : str = './config/client.json'):
         'application_id': 'demo',
         'throttle': 10,
         'server': 'http://replaceme/',
-        'ws endpoint': 'wswork',
         'use ssl': False,
-        'timeout': 5}
+        'timeout': 5,
+        'debug': False,
+        'telemetry': 5000  # milliseconds
+    }
     write_config(config, filename)
 
 
@@ -116,7 +118,11 @@ def create_server_config(filename : str = './config/server.json'):
                 'index': '/srv/battletrackerv2/offload/index.txt'
             }
         },
-        'debug access': ['127.0.0.1']
+        'debug access': ['127.0.0.1'],
+        'telemetry': {
+            'file': 'logs/telemetry-%Y_%m_%d',
+            'interval': 5000  # milliseconds
+        }
     }
     with open(filename, 'w') as f:
         dump(newconfig, f, indent=4)

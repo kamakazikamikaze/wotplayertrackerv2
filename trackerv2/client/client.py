@@ -121,7 +121,6 @@ class TrackerClientNode:
             self.log.warning('Batch %i: Timeout reached', work[0])
             return
         try:
-            completed += 1
             a = APIResult(
                 tuple(
                     Player(
@@ -137,6 +136,7 @@ class TrackerClientNode:
                 work[2],
                 work[0]
             )
+            completed += 1
             await self.conn.write_message(dumps(a), True)
             end = datetime.now()
             self.log.debug(

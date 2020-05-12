@@ -2,6 +2,7 @@ import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
 from datetime import datetime
+from ipaddress import ip_address
 from json.decoder import JSONDecodeError
 import linecache
 import logging
@@ -10,7 +11,7 @@ from os import mkdir, sep
 from os.path import join as pjoin
 from os.path import split as psplit
 from os.path import exists
-from pickle import loads, dumps, UnpicklingError
+from pickle import loads, dumps, UnpicklingError, load, dump, HIGHEST_PROTOCOL
 from queue import Empty
 from sys import exit
 from tornado import ioloop, web, websocket
@@ -24,9 +25,11 @@ from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
 # Import APIResult and Player as we will unpickle them. Ignore unused warnings
 from utils import create_client_config, create_server_config, APIResult, Player
+from utils import expand_debug_access_ips
 from work import setup_work, calculate_total_batches
 
 workgenerator = None
+workpop = 0
 assignedwork = None
 assignedworkcount = 0
 completedcount = 0
@@ -37,20 +40,20 @@ server_config = None
 received_queue = None
 registered = set()
 startwork = False
-manager = Manager()
-workdone = manager.list()
 logger = logging.getLogger('WoTServer')
+telelogger = logging.getLogger('Telemetry')
 db_helpers = None
+allowed_debug = None
 
 
 def _setupLogging(conf):
-    formatter = logging.Formatter(
-        '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
-        datefmt='%m-%d %H:%M:%S')
     if 'logging' in conf:
-        pardir = psplit(conf['logging']['file'])[0]
-        if not exists(pardir):
-            mkdir(pardir)
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
+            datefmt='%m-%d %H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
         ch = logging.StreamHandler()
         if conf['logging']['level'].lower() == 'debug':
             level = logging.DEBUG
@@ -75,6 +78,26 @@ def _setupLogging(conf):
         nu = logging.NullHandler()
         logger.addHandler(nu)
         logger.setLevel(logging.ERROR)
+
+    if 'telemetry' in conf:
+        telelogger.propagate = False
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d,%(message)s',
+            datefmt='%H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
+        fh = logging.FileHandler(
+            datetime.now().strftime(conf['telemetry']['file']))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        telelogger.addHandler(fh)
+        telelogger.setLevel(logging.DEBUG)
+        telelogger.debug('IP,Completed,Timeouts,Errors')
+    else:
+        nu = logging.NullHandler()
+        telelogger.addHandler(nu)
+        telelogger.setLevel(logging.ERROR)
 
 
 def move_to_stale(ipaddress, work):
@@ -102,9 +125,17 @@ class DebugHandler(web.RequestHandler):
     """
 
     def get(self, uri=None):
+        source_ip = ip_address(self.request.remote_ip)
+        if not any(source_ip in network for network in allowed_debug):
+            self.set_status(400)
+            logger.info(
+                'Unauthorized host %s attempted to access debug panel',
+                self.request.remote_ip
+            )
+            return
         if uri is None:
             return
-        if uri == 'hashes':
+        elif uri == 'hashes':
             self.write(json_encode(hashes))
         elif uri == 'work':
             self.write(json_encode(assignedwork))
@@ -118,6 +149,18 @@ class DebugHandler(web.RequestHandler):
             self.write(str(stalework))
         elif uri == 'assignedcount':
             self.write(str(assignedworkcount))
+        elif uri == 'dump':
+            try:
+                now = datetime.utcnow()
+                with open(now.strftime('recovery-%Y-%m-%d.dump'), 'wb') as f:
+                    dump(
+                        [workpop, completedcount, stalework],
+                        f,
+                        HIGHEST_PROTOCOL
+                    )
+                self.write('Dump successful')
+            except Exception as e:
+                self.write('Exception occurred: {}'.format(e))
         else:
             self.write('No debug output for: ' + uri)
 
@@ -138,10 +181,8 @@ class UpdateHandler(web.RequestHandler):
                 self.set_status(204)
             else:
                 self.redirect(
-                    '/files/' +
-                    client['os'] +
-                    '/' +
-                    client['filename'])
+                    '/files/' + client['os'] + '/' + client['filename']
+                )
 
 
 class TraceHandler(web.RequestHandler):
@@ -177,15 +218,6 @@ class TraceHandler(web.RequestHandler):
                 '</body></html>')
         else:
             self.set_status(404)
-
-
-class StatusHandler(web.RequestHandler):
-    r"""
-    Reviewing progress of the current run or connected clients
-    """
-
-    def get(self):
-        pass
 
 
 class SetupHandler(web.RequestHandler):
@@ -258,6 +290,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
 
     async def send_work(self):
         global assignedworkcount
+        global workpop
         if not startwork:
             return
         if len(workdone):
@@ -270,6 +303,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
             except IndexError:
                 try:
                     work = next(workgenerator)
+                    workpop += 1
                     if work is None:
                         raise StopIteration
                 except StopIteration:
@@ -327,6 +361,23 @@ class WorkWSHandler(websocket.WebSocketHandler):
             assignedworkcount -= 1
         completedcount += 1
         await self.send_work()
+
+
+class TelemetryWSHandler(websocket.WebSocketHandler):
+    r"""
+    Endpoint for receiving debugging/statistical data.
+
+    This endpoint is to be used for collecting performance metrics only, such
+    as retry count, completed batches, and
+    """
+
+    def open(self, *args, **kwargs):
+        if self.request.remote_ip not in registered:
+            self.close()
+            return
+
+    def on_message(self, message):
+        telelogger.debug(genuuid(self.request.remote_ip) + message)
 
 
 async def send_to_elasticsearch(conf, conn):
@@ -410,14 +461,20 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
             if len(work_done):
                 break
             continue
+        # Use the async here instead of before the `while` statement. Failure
+        # to do so can pin to a specific helper waiting for work instead of
+        # context switching to another that already has something to process
         async with db_pool.acquire() as conn:
             try:
                 results = res_queue.get_nowait()
             except Empty:
                 continue
-            _ = await conn.executemany(
+            __ = await conn.executemany(
                 (
-                    'SELECT upsert_player('
+                    'INSERT INTO players ('
+                    'account_id, nickname, created_at, last_battle_time,'
+                    'updated_at, battles, _last_api_pull, console)'
+                    'VALUES ('
                     '$1::int, '
                     '$2::text, '
                     'to_timestamp($3)::timestamp, '
@@ -425,7 +482,14 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                     'to_timestamp($5)::timestamp, '
                     '$6::int, '
                     'to_timestamp($7)::timestamp, '
-                    '$8::text)'
+                    '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+                    'nickname, last_battle_time, updated_at, battles, '
+                    '_last_api_pull) = ('
+                    '$2::text, '
+                    'to_timestamp($4)::timestamp, '
+                    'to_timestamp($5)::timestamp, '
+                    '$6::int, '
+                    'to_timestamp($7)::timestamp)'
                 ),
                 tuple((*p, results[1], results[2]) for p in results[0])
             )
@@ -522,8 +586,8 @@ def make_app(sfiles, serverconfig, clientconfig):
         (r"/setup", SetupHandler,
          dict(serverconfig=serverconfig, clientconfig=clientconfig)),
         (r"/updates", UpdateHandler),
-        (r"/wswork", WorkWSHandler),
-        (r"/status", StatusHandler),
+        (r"/work", WorkWSHandler),
+        (r"/telemetry", TelemetryWSHandler),
         (r"/debug/([^/]*)", DebugHandler),
         (r"/trace/([^/]*)", TraceHandler),
         (r"/files/nix/([^/]*)", web.StaticFileHandler,
@@ -573,6 +637,11 @@ if __name__ == '__main__':
         help='Number of asynchronous helpers to spawn per result sender',
         type=int,
         default=3)
+    agp.add_argument(
+        '-r',
+        '--recover',
+        help='Recover server from a previous dump state',
+        type=str)
     args = agp.parse_args()
 
     if args.generate_config:
@@ -584,8 +653,21 @@ if __name__ == '__main__':
     static_files = args.static_files
     server_config = load_config(args.config)
     client_config = load_config(args.client_config)
+    if 'telemetry' in server_config:
+        if 'interval' in server_config['telemetry']:
+            client_config['telemetry'] = server_config['telemetry']['interval']
+        else:
+            # Default to 10 seconds
+            client_config['telemetry'] = 10000
+    else:
+        try:
+            del client_config['telemetry']
+        except KeyError:
+            pass
 
     # Setup server
+    manager = Manager()
+    workdone = manager.list()
     received_queue = manager.Queue()
     workgenerator = setup_work(server_config)
     totalbatches = calculate_total_batches(server_config)
@@ -594,6 +676,7 @@ if __name__ == '__main__':
     stalework = deque()
     hashes = genhashes(static_files)
     client_config['files'] = list(hashes['win'].keys())
+    allowed_debug = expand_debug_access_ips(server_config)
     # TODO: Create a timer to change startwork
     startwork = True
     _setupLogging(server_config)
@@ -601,12 +684,19 @@ if __name__ == '__main__':
         logger.debug('Starting memory trace')
         tracemalloc.start()
 
+    if args.recover:
+        with open(args.recover, 'rb') as f:
+            workpop, completedcount, stalework = load(f)
+            for __ in range(workpop):
+                __ = next(workgenerator)
+
     try:
         start = datetime.now()
-        ioloop.IOLoop.current().run_sync(
-            lambda: setup_database(server_config['database']))
-        # ioloop.IOLoop.current().run_sync(
-        #     lambda: opendb(server_config['database']))
+        # Don't set up tables when recovering. We have explicitly coded to exit
+        # if the tables already exist. Not sure if we need to modify this
+        if not args.recover:
+            ioloop.IOLoop.current().run_sync(
+                lambda: setup_database(server_config['database']))
         app = make_app(static_files, server_config, client_config)
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(

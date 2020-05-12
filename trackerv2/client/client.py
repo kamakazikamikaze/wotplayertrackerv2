@@ -4,18 +4,20 @@ from os import mkdir
 from os.path import exists
 from pickle import dumps, loads
 from tornado import ioloop
-from tornado.escape import json_decode  # , json_encode
-from tornado.httpclient import AsyncHTTPClient  # , HTTPRequest
+from tornado.escape import json_decode
+from tornado.httpclient import AsyncHTTPClient
 from tornado.httputil import url_concat
 from tornado.queues import Queue, QueueEmpty
 from tornado.simple_httpclient import HTTPTimeoutError
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
 
-from utils import load_config, APIResult, Player  # , write_config
-# from wotconsole import player_data, WOTXResponseError
+from utils import load_config, APIResult, Player
 
 workdone = False
+completed = 0
+timeouts = 0
+errors = 0
 
 
 class TrackerClientNode:
@@ -36,13 +38,16 @@ class TrackerClientNode:
     def __init__(self, config):
         self.server = config['server']
         self.ssl = config['use ssl']
-        self.endpoint = config['ws endpoint']
+        # self.endpoint = config['ws endpoint']
+        self.endpoint = 'work'
         self.throttle = 10 if 'throttle' not in config else config['throttle']
         self.key = config['application_id']
         self.debug = False if 'debug' not in config else config['debug']
         self.timeout = 5 if 'timeout' not in config else config['timeout']
         self.schedule = ioloop.PeriodicCallback(
-            self.query, 1000 // self.throttle)
+            self.query,
+            1000 // self.throttle
+        )
         self.http_client = AsyncHTTPClient(max_clients=self.throttle)
         self._setupLogging()
 
@@ -52,7 +57,8 @@ class TrackerClientNode:
         self.log = logging.getLogger('Client')
         formatter = logging.Formatter(
             '%(asctime)s.%(msecs)03d | %(name)s | %(levelname)-8s | %(message)s',
-            datefmt='%m-%d %H:%M:%S')
+            datefmt='%m-%d %H:%M:%S'
+        )
         if self.debug:
             # self.log.propagate = True
             ch = logging.StreamHandler()
@@ -86,6 +92,9 @@ class TrackerClientNode:
         except QueueEmpty:
             self.log.debug('Empty queue')
             return
+        global completed
+        global timeouts
+        global errors
         self.log.debug('Batch %i: Starting', work[0])
         start = datetime.now()
         params = {
@@ -102,13 +111,15 @@ class TrackerClientNode:
             response = await self.http_client.fetch(
                 url,
                 request_timeout=self.timeout)
+            self.log.debug(
+                'Batch %i: %f seconds to complete request',
+                work[0],
+                response.request_time)
         except HTTPTimeoutError:
+            timeouts += 1
             TrackerClientNode.workqueue.put_nowait(work)
             self.log.warning('Batch %i: Timeout reached', work[0])
-        self.log.debug(
-            'Batch %i: %f seconds to complete request',
-            work[0],
-            response.request_time)
+            return
         try:
             a = APIResult(
                 tuple(
@@ -123,20 +134,25 @@ class TrackerClientNode:
                         response.body)['data'].items() if p),
                 response.request.start_time,
                 work[2],
-                work[0])
+                work[0]
+            )
+            completed += 1
             await self.conn.write_message(dumps(a), True)
             end = datetime.now()
             self.log.debug(
                 'Batch %i: %f seconds of runtime',
                 work[0],
-                (end - start).total_seconds())
+                (end - start).total_seconds()
+            )
         except ValueError:
+            errors += 1
             self.log.error(
                 'Batch %i: No data for %s',
                 work[0],
-                json_decode(
-                    response.body))
+                json_decode(response.body)
+            )
         except KeyError:
+            errors += 1
             self.log.error('Batch %i: %s', work[0], response.body)
 
     async def connect(self):
@@ -144,6 +160,45 @@ class TrackerClientNode:
         self.conn = await websocket_connect(
             urljoin(self.server.replace('http', wsproto), self.endpoint),
             on_message_callback=self.on_message
+        )
+
+    def start(self):
+        self.schedule.start()
+
+    def stop(self):
+        self.schedule.stop()
+
+
+class TelemetryClientNode:
+
+    def __init__(self, config):
+        self.server = config['server']
+        self.ssl = config['use ssl']
+        # self.endpoint = config['telemetry endpoint']
+        self.endpoint = 'telemetry'
+        self.schedule = ioloop.PeriodicCallback(
+            self.send_update,
+            config['telemetry']
+        )
+
+    async def connect(self):
+        wsproto = 'ws' if not self.ssl else 'wss'
+        self.conn = await websocket_connect(
+            urljoin(self.server.replace('http', wsproto), self.endpoint),
+            on_message_callback=self.on_message
+        )
+
+    def on_message(self, message):
+        # Shouldn't expect anything. One-way.
+        pass
+
+    async def send_update(self):
+        self.conn.write_message(
+            ',{},{},{}'.format(
+                completed,
+                timeouts,
+                errors
+            )
         )
 
     def start(self):
@@ -171,6 +226,10 @@ if __name__ == '__main__':
         client = TrackerClientNode(config)
         ioloop.IOLoop.current().run_sync(client.connect)
         client.start()
+        if 'telemetry' in config:
+            telemetry = TelemetryClientNode(config)
+            ioloop.IOLoop.current().run_sync(telemetry.connect)
+            telemetry.start()
         exitcall = ioloop.PeriodicCallback(try_exit, 1000)
         exitcall.start()
         ioloop.IOLoop.current().start()

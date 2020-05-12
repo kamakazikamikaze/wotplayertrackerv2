@@ -5,7 +5,7 @@ import json
 
 async def setup_database(db):
     conn = await asyncpg.connect(**db)
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE IF NOT EXISTS players (
             account_id integer PRIMARY KEY,
             nickname varchar(34) NOT NULL,
@@ -16,89 +16,56 @@ async def setup_database(db):
             battles integer NOT NULL,
             _last_api_pull timestamp NOT NULL)''')
 
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(
         datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
     )
 
-    _ = await conn.execute('''
+    __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
 
+    # We shouldn't get a duplicate error because of the REPLACE statement
     try:
-        _ = await conn.execute('''
+        __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION update_total()
               RETURNS trigger AS
             $func$
             BEGIN
                IF (OLD.battles < NEW.battles) THEN
-                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
                END IF;
                RETURN NEW;
             END
-            $func$ LANGUAGE plpgsql;
-            CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();''')
+            $func$ LANGUAGE plpgsql;''')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
     try:
-        _ = await conn.execute('''
+        __ = await conn.execute('CREATE TRIGGER update_stats BEFORE UPDATE ON players FOR EACH ROW EXECUTE PROCEDURE update_total();')
+    except asyncpg.exceptions.DuplicateObjectError:
+        pass
+
+    # We shouldn't get a duplicate error because of the REPLACE statement
+    try:
+        __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION new_player()
               RETURNS trigger AS
             $func$
             BEGIN
-              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles)', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               RETURN NEW;
             END
-            $func$ LANGUAGE plpgsql;
-            CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();''')
+            $func$ LANGUAGE plpgsql;''')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
     try:
-        _ = await conn.execute('''
-            CREATE OR REPLACE FUNCTION upsert_player(
-                a_id INT,
-                nick TEXT,
-                c_at TIMESTAMP,
-                l_b_t TIMESTAMP,
-                u_at TIMESTAMP,
-                b INT,
-                _l_a_p TIMESTAMP,
-                con TEXT
-            ) RETURNS VOID AS
-            $$
-            BEGIN
-                LOOP
-                    -- first, try to update the key
-                    UPDATE players SET (last_battle_time, updated_at, battles,
-                        _last_api_pull, nickname) = (l_b_t, u_at, b, _l_a_p,
-                        nick) WHERE account_id = a_id;
-                    IF found THEN
-                        RETURN;
-                    END IF;
-                    -- not there, try to insert
-                    BEGIN
-                        INSERT INTO players (
-                            account_id, nickname, console, created_at,
-                            last_battle_time, updated_at, battles,
-                            _last_api_pull
-                            ) VALUES (
-                            a_id, nick, con, c_at, l_b_t, u_at, b, _l_a_p
-                            );
-                        RETURN;
-                    EXCEPTION WHEN unique_violation THEN
-                        -- do nothing; and loop to try the UPDATE
-                    END;
-                END LOOP;
-            END;
-            $$
-            LANGUAGE plpgsql;
-            ''')
+        __ = await conn.execute('CREATE TRIGGER new_player_total AFTER INSERT ON players FOR EACH ROW EXECUTE PROCEDURE new_player();')
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 

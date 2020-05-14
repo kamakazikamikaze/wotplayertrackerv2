@@ -56,7 +56,8 @@ def create_client_config(filename : str = './config/client.json'):
         'use ssl': False,
         'timeout': 5,
         'debug': False,
-        'telemetry': 5000  # milliseconds
+        'telemetry': 5000,  # milliseconds
+        'processes': 2
     }
     write_config(config, filename)
 

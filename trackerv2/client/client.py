@@ -1,8 +1,12 @@
+from argparse import ArgumentParser
 from datetime import datetime
+from functools import partial
 import logging
+from multiprocessing import Process, Manager, cpu_count
 from os import mkdir
 from os.path import exists
 from pickle import dumps, loads
+from queue import Empty
 from tornado import ioloop
 from tornado.escape import json_decode
 from tornado.httpclient import AsyncHTTPClient
@@ -14,10 +18,51 @@ from urllib.parse import urljoin
 
 from utils import load_config, APIResult, Player
 
-workdone = False
-completed = 0
 timeouts = 0
-errors = 0
+
+
+def result_handler(queue, return_queue, work_done, identity):
+    logger = logging.getLogger('Client')
+    while True:
+        if not queue.qsize():
+            if len(work_done) >= 3:
+                break
+        try:
+            work, response = queue.get_nowait()
+        except Empty:
+            continue
+        try:
+            players = APIResult(
+                tuple(
+                    Player(
+                        p['account_id'],
+                        p['nickname'],
+                        p['created_at'],
+                        p['last_battle_time'],
+                        p['updated_at'],
+                        p['statistics']['all']['battles']
+                    ) for __, p in json_decode(
+                        response.body)['data'].items() if p),
+                response.request.start_time,
+                work[2],
+                work[0]
+            )
+            return_queue.put_nowait(players)
+            logger.debug('Batch %i: Converted to APIResult', work[0])
+            # completed += 1
+            work_done[0] += 1
+        except ValueError:
+            # errors += 1
+            work_done[1] += 1
+            logger.error(
+                'Batch %i: No data for %s',
+                work[0],
+                json_decode(response.body)
+            )
+        except KeyError:
+            # errors += 1
+            work_done[1] += 1
+            logger.error('Batch %i: %s', work[0], response.body)
 
 
 class TrackerClientNode:
@@ -38,7 +83,6 @@ class TrackerClientNode:
     def __init__(self, config):
         self.server = config['server']
         self.ssl = config['use ssl']
-        # self.endpoint = config['ws endpoint']
         self.endpoint = 'work'
         self.throttle = 10 if 'throttle' not in config else config['throttle']
         self.key = config['application_id']
@@ -50,6 +94,7 @@ class TrackerClientNode:
         )
         self.http_client = AsyncHTTPClient(max_clients=self.throttle)
         self._setupLogging()
+        self.loop = ioloop.IOLoop.current()
 
     def _setupLogging(self):
         if not exists('log'):
@@ -82,9 +127,10 @@ class TrackerClientNode:
             self.log.debug('Got work from server')
         else:
             global workdone
+            self.log.debug('Got empty message from server')
             self.stop()
             self.conn.close()
-            workdone = True
+            workdone.append(True)
 
     async def query(self):
         try:
@@ -92,9 +138,7 @@ class TrackerClientNode:
         except QueueEmpty:
             self.log.debug('Empty queue')
             return
-        global completed
         global timeouts
-        global errors
         self.log.debug('Batch %i: Starting', work[0])
         start = datetime.now()
         params = {
@@ -120,40 +164,50 @@ class TrackerClientNode:
             TrackerClientNode.workqueue.put_nowait(work)
             self.log.warning('Batch %i: Timeout reached', work[0])
             return
+        result_queue.put_nowait((work, response))
+        self.log.debug('Batch %i: Sent to converter', work[0])
         try:
-            a = APIResult(
-                tuple(
-                    Player(
-                        p['account_id'],
-                        p['nickname'],
-                        p['created_at'],
-                        p['last_battle_time'],
-                        p['updated_at'],
-                        p['statistics']['all']['battles']
-                    ) for __, p in json_decode(
-                        response.body)['data'].items() if p),
-                response.request.start_time,
-                work[2],
-                work[0]
+            await self.conn.write_message(
+                dumps(
+                    await self.loop.run_in_executor(
+                        None,
+                        func=partial(
+                            send_queue.get,
+                            True,
+                            2
+                        )
+                    )
+                ),
+                True
             )
-            completed += 1
-            await self.conn.write_message(dumps(a), True)
-            end = datetime.now()
-            self.log.debug(
-                'Batch %i: %f seconds of runtime',
-                work[0],
-                (end - start).total_seconds()
-            )
-        except ValueError:
-            errors += 1
-            self.log.error(
-                'Batch %i: No data for %s',
-                work[0],
-                json_decode(response.body)
-            )
-        except KeyError:
-            errors += 1
-            self.log.error('Batch %i: %s', work[0], response.body)
+            self.log.debug('Batch %i: Sent data back to server', work[0])
+        except Exception as e:
+            self.log.error('Batch %i: %s', work[0], e)
+        # Ideally, if we get a response, we'll have data to send back
+        # try:
+        #     returned_work = await self.loop.run_in_executor(
+        #         None,
+        #         func=partial(send_queue.get, True, 2)
+        #     )
+        # except Exception as e:
+        #     self.log.debug(
+        #         'Batch %i: Error getting result from queue',
+        #         work[0]
+        #     )
+        #     return
+        # try:
+        #     # Pass True as second param to indicate binary data. Failure to do
+        #     # so will result in a 'None' response in our on_message callback,
+        #     # terminating prematurely
+        #     await self.conn.write_message(dumps(returned_work), True)
+        #     self.log.debug(
+        #         'Batch %i: Sent back batch %i to server',
+        #         work[0],
+        #         returned_work[3]
+        #     )
+        # # In case our batch is invalid, catch the error but do nothing
+        # except Exception as e:
+        #     self.log.debug('Returning batch %i: Error %s', returned_work[3], e)
 
     async def connect(self):
         wsproto = 'ws' if not self.ssl else 'wss'
@@ -174,7 +228,6 @@ class TelemetryClientNode:
     def __init__(self, config):
         self.server = config['server']
         self.ssl = config['use ssl']
-        # self.endpoint = config['telemetry endpoint']
         self.endpoint = 'telemetry'
         self.schedule = ioloop.PeriodicCallback(
             self.send_update,
@@ -195,9 +248,11 @@ class TelemetryClientNode:
     async def send_update(self):
         self.conn.write_message(
             ',{},{},{}'.format(
-                completed,
+                # completed,
+                workdone[0],
                 timeouts,
-                errors
+                # errors
+                workdone[1]
             )
         )
 
@@ -209,21 +264,46 @@ class TelemetryClientNode:
 
 
 def try_exit():
-    if workdone:
+    if len(workdone) >= 3:
+        for converter in converters:
+            converter.join()
+        i = 0
+        # allow t
+        while send_queue.qsize() and i < 10000:
+            i += 1
+
         print('Work complete. Shutting down client')
         ioloop.IOLoop.current().stop()
 
 if __name__ == '__main__':
-    from argparse import ArgumentParser
     agp = ArgumentParser()
     agp.add_argument(
         'config',
         help='Client configuration file to use',
         default='./config/client.json')
     args = agp.parse_args()
+    manager = Manager()
+    result_queue = manager.Queue()
+    send_queue = manager.Queue()
+    workdone = manager.list()
+    # completed -> [0]
+    workdone.append(0)
+    # errors -> [1]
+    workdone.append(0)
     try:
         config = load_config(args.config)
+        proc_count = config['processes'] if 'processes' in config and config[
+            'processes'] >= 1 else 1
         client = TrackerClientNode(config)
+        converters = [Process(
+            target=result_handler,
+            args=(
+                result_queue,
+                send_queue,
+                workdone,
+                i
+            )
+        ) for i in range(proc_count)]
         ioloop.IOLoop.current().run_sync(client.connect)
         client.start()
         if 'telemetry' in config:
@@ -232,8 +312,15 @@ if __name__ == '__main__':
             telemetry.start()
         exitcall = ioloop.PeriodicCallback(try_exit, 1000)
         exitcall.start()
+        for converter in converters:
+            converter.start()
         ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
         print('Shutting down')
         ioloop.IOLoop.current().stop()
-        exitcall.stop()
+        try:
+            for converter in converters:
+                converter.terminate()
+            exitcall.stop()
+        except NameError:
+            pass

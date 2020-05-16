@@ -92,7 +92,7 @@ class TrackerClientNode:
             self.query,
             1000 // self.throttle
         )
-        self.http_client = AsyncHTTPClient(max_clients=self.throttle)
+        self.http_client = AsyncHTTPClient(max_clients=(self.throttle * 2))
         self._setupLogging()
         self.loop = ioloop.IOLoop.current()
 
@@ -166,6 +166,13 @@ class TrackerClientNode:
             return
         result_queue.put_nowait((work, response))
         self.log.debug('Batch %i: Sent to converter', work[0])
+        # self.loop.call_later(
+        #     self.throttle / 1000,
+        #     partial(
+        #         self.send_message,
+        #         work[0],
+        #     )
+        # )
         try:
             await self.conn.write_message(
                 dumps(
@@ -183,31 +190,25 @@ class TrackerClientNode:
             self.log.debug('Batch %i: Sent data back to server', work[0])
         except Exception as e:
             self.log.error('Batch %i: %s', work[0], e)
-        # Ideally, if we get a response, we'll have data to send back
-        # try:
-        #     returned_work = await self.loop.run_in_executor(
-        #         None,
-        #         func=partial(send_queue.get, True, 2)
-        #     )
-        # except Exception as e:
-        #     self.log.debug(
-        #         'Batch %i: Error getting result from queue',
-        #         work[0]
-        #     )
-        #     return
-        # try:
-        #     # Pass True as second param to indicate binary data. Failure to do
-        #     # so will result in a 'None' response in our on_message callback,
-        #     # terminating prematurely
-        #     await self.conn.write_message(dumps(returned_work), True)
-        #     self.log.debug(
-        #         'Batch %i: Sent back batch %i to server',
-        #         work[0],
-        #         returned_work[3]
-        #     )
-        # # In case our batch is invalid, catch the error but do nothing
-        # except Exception as e:
-        #     self.log.debug('Returning batch %i: Error %s', returned_work[3], e)
+
+    async def send_message(self, batch):
+        self.log.debug('send_message %i: Invoked', batch)
+        try:
+            await self.conn.write_message(
+                dumps(await self.loop.run_in_executor(
+                    None,
+                    func=partial(
+                        send_queue.get,
+                        True,
+                        0.5
+                    )
+                )
+                ),
+                True
+            )
+            self.log.debug('send_message %i: Message sent', batch)
+        except Exception as e:
+            self.log.error('send_message %i: %s', batch, e)
 
     async def connect(self):
         wsproto = 'ws' if not self.ssl else 'wss'

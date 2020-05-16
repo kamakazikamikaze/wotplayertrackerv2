@@ -2,6 +2,7 @@ import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
 from datetime import datetime
+from functools import partial
 from ipaddress import ip_address
 from json.decoder import JSONDecodeError
 import linecache
@@ -311,7 +312,15 @@ class WorkWSHandler(websocket.WebSocketHandler):
                         workdone.append(True)
                         logger.info('Work done')
                     return
-            await self.write_message(dumps(work), True)
+            # await self.write_message(dumps(work), True)
+            # Send the message later, queue up as fast as possible
+            ioloop.IOLoop.current().add_callback(
+                partial(
+                    self.write_message,
+                    dumps(work),
+                    True
+                )
+            )
             assignedwork[client][work[0]] = work
             timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
@@ -360,7 +369,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
             # Don't decrement count unless assigned work is removed
             assignedworkcount -= 1
         completedcount += 1
-        await self.send_work()
+        # await self.send_work()
+        ioloop.IOLoop.current().add_callback(self.send_work)
 
 
 class TelemetryWSHandler(websocket.WebSocketHandler):

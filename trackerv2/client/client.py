@@ -12,7 +12,7 @@ from tornado.simple_httpclient import HTTPTimeoutError
 from tornado.websocket import websocket_connect
 from urllib.parse import urljoin
 
-from utils import load_config, APIResult, Player
+from utils import load_config, APIResult  # , Player
 
 workdone = False
 completed = 0
@@ -48,7 +48,7 @@ class TrackerClientNode:
             self.query,
             1000 // self.throttle
         )
-        self.http_client = AsyncHTTPClient(max_clients=self.throttle)
+        self.http_client = AsyncHTTPClient(max_clients=(self.throttle * 2))
         self._setupLogging()
 
     def _setupLogging(self):
@@ -120,40 +120,67 @@ class TrackerClientNode:
             TrackerClientNode.workqueue.put_nowait(work)
             self.log.warning('Batch %i: Timeout reached', work[0])
             return
-        try:
-            a = APIResult(
-                tuple(
-                    Player(
-                        p['account_id'],
-                        p['nickname'],
-                        p['created_at'],
-                        p['last_battle_time'],
-                        p['updated_at'],
-                        p['statistics']['all']['battles']
-                    ) for __, p in json_decode(
-                        response.body)['data'].items() if p),
-                response.request.start_time,
-                work[2],
-                work[0]
-            )
-            completed += 1
-            await self.conn.write_message(dumps(a), True)
-            end = datetime.now()
-            self.log.debug(
-                'Batch %i: %f seconds of runtime',
+        if response.code != 200:
+            TrackerClientNode.workqueue.put_nowait(work)
+            self.log.warning(
+                'Batch %i: Status code %i',
                 work[0],
-                (end - start).total_seconds()
+                response.code
             )
-        except ValueError:
             errors += 1
-            self.log.error(
-                'Batch %i: No data for %s',
-                work[0],
-                json_decode(response.body)
-            )
-        except KeyError:
-            errors += 1
-            self.log.error('Batch %i: %s', work[0], response.body)
+            return
+        await self.conn.write_message(
+            dumps(
+                APIResult(
+                    response.body,
+                    response.request.start_time,
+                    work[2],
+                    work[0]
+                )
+            ),
+            True
+        )
+        completed += 1
+        end = datetime.now()
+        self.log.debug(
+            'Batch %i: %f seconds of runtime',
+            work[0],
+            (end - start).total_seconds()
+        )
+        # try:
+        #     a = APIResult(
+        #         tuple(
+        #             Player(
+        #                 p['account_id'],
+        #                 p['nickname'],
+        #                 p['created_at'],
+        #                 p['last_battle_time'],
+        #                 p['updated_at'],
+        #                 p['statistics']['all']['battles']
+        #             ) for __, p in json_decode(
+        #                 response.body)['data'].items() if p),
+        #         response.request.start_time,
+        #         work[2],
+        #         work[0]
+        #     )
+        #     completed += 1
+        #     await self.conn.write_message(dumps(a), True)
+        #     end = datetime.now()
+        #     self.log.debug(
+        #         'Batch %i: %f seconds of runtime',
+        #         work[0],
+        #         (end - start).total_seconds()
+        #     )
+        # except ValueError:
+        #     errors += 1
+        #     self.log.error(
+        #         'Batch %i: No data for %s',
+        #         work[0],
+        #         json_decode(response.body)
+        #     )
+        # except KeyError:
+        #     errors += 1
+        #     self.log.error('Batch %i: %s', work[0], response.body)
 
     async def connect(self):
         wsproto = 'ws' if not self.ssl else 'wss'

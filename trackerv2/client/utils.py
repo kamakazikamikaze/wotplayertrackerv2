@@ -63,7 +63,7 @@ class Player(NamedTuple):
 
 
 class APIResult(NamedTuple):
-    players: tuple
+    players: bytes
     last_api_pull: int
     console: str
     batch: int

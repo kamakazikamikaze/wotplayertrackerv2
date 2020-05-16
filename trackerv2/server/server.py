@@ -335,9 +335,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
         try:
             results = loads(message)
             received_queue.put_nowait(results)
-            # del message
         except UnpicklingError:
-            # Will the clients ever send incomplete data?
+            logger.error('Received bad result message from %s', client)
             return
         try:
             ioloop.IOLoop.current().remove_timeout(
@@ -469,36 +468,104 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                 results = res_queue.get_nowait()
             except Empty:
                 continue
-            __ = await conn.executemany(
-                (
-                    'INSERT INTO players ('
-                    'account_id, nickname, created_at, last_battle_time,'
-                    'updated_at, battles, _last_api_pull, console)'
-                    'VALUES ('
-                    '$1::int, '
-                    '$2::text, '
-                    'to_timestamp($3)::timestamp, '
-                    'to_timestamp($4)::timestamp, '
-                    'to_timestamp($5)::timestamp, '
-                    '$6::int, '
-                    'to_timestamp($7)::timestamp, '
-                    '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
-                    'nickname, last_battle_time, updated_at, battles, '
-                    '_last_api_pull) = ('
-                    '$2::text, '
-                    'to_timestamp($4)::timestamp, '
-                    'to_timestamp($5)::timestamp, '
-                    '$6::int, '
-                    'to_timestamp($7)::timestamp)'
-                ),
-                tuple((*p, results[1], results[2]) for p in results[0])
-            )
-            logger.debug(
-                'Process-%i: Async-%i submitted batch %i',
-                par,
-                chi,
-                results.batch)
+            try:
+                for __, p in json_decode(results.players)['data'].items():
+                    if not p:  # None/null
+                        continue
+                    try:
+                        __ = await conn.execute(
+                            (
+                                'INSERT INTO players ('
+                                'account_id, nickname, created_at, last_battle_time,'
+                                'updated_at, battles, _last_api_pull, console)'
+                                'VALUES ('
+                                '$1::int, '
+                                '$2::text, '
+                                'to_timestamp($3)::timestamp, '
+                                'to_timestamp($4)::timestamp, '
+                                'to_timestamp($5)::timestamp, '
+                                '$6::int, '
+                                'to_timestamp($7)::timestamp, '
+                                '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+                                'nickname, last_battle_time, updated_at, battles, '
+                                '_last_api_pull) = ('
+                                '$2::text, '
+                                'to_timestamp($4)::timestamp, '
+                                'to_timestamp($5)::timestamp, '
+                                '$6::int, '
+                                'to_timestamp($7)::timestamp)'
+                            ),
+                            p['account_id'],
+                            p['nickname'],
+                            p['created_at'],
+                            p['last_battle_time'],
+                            p['updated_at'],
+                            p['statistics']['all']['battles'],
+                            results.last_api_pull,
+                            results.console
+                        )
+                    except AttributeError:
+                        # accound_id exusts but player info not populated
+                        continue
+                    except KeyError:
+                        logger.error(
+                            'Process-%i: Async-%i: Batch-%i: Account %s: %s',
+                            par,
+                            chi,
+                            results,
+                            batch,
+                            __,
+                            e)
+                logger.debug(
+                    'Process-%i: Async-%i submitted batch %i',
+                    par,
+                    chi,
+                    results.batch)
+            except KeyError as e:
+                logger.error(
+                    'Process-%i: Async-%i: Batch %i: %s',
+                    par,
+                    chi,
+                    results.batch,
+                    e)
+            except ValueError:
+                logger.error(
+                    'Process-%i: Async-%i: Batch %i has no "data" key',
+                    par,
+                    chi,
+                    results.batch)
     logger.debug('Process-%i: Async-%i exiting', par, chi)
+
+    #         __ = await conn.executemany(
+    #             (
+    #                 'INSERT INTO players ('
+    #                 'account_id, nickname, created_at, last_battle_time,'
+    #                 'updated_at, battles, _last_api_pull, console)'
+    #                 'VALUES ('
+    #                 '$1::int, '
+    #                 '$2::text, '
+    #                 'to_timestamp($3)::timestamp, '
+    #                 'to_timestamp($4)::timestamp, '
+    #                 'to_timestamp($5)::timestamp, '
+    #                 '$6::int, '
+    #                 'to_timestamp($7)::timestamp, '
+    #                 '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+    #                 'nickname, last_battle_time, updated_at, battles, '
+    #                 '_last_api_pull) = ('
+    #                 '$2::text, '
+    #                 'to_timestamp($4)::timestamp, '
+    #                 'to_timestamp($5)::timestamp, '
+    #                 '$6::int, '
+    #                 'to_timestamp($7)::timestamp)'
+    #             ),
+    #             tuple((*p, results[1], results[2]) for p in results[0])
+    #         )
+    #         logger.debug(
+    #             'Process-%i: Async-%i submitted batch %i',
+    #             par,
+    #             chi,
+    #             results.batch)
+    # logger.debug('Process-%i: Async-%i exiting', par, chi)
 
 
 def result_handler(dbconf, res_queue, work_done, par, pool_size=3):

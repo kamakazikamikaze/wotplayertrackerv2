@@ -1,4 +1,5 @@
 from datetime import datetime
+from functools import partial
 import logging
 from os import mkdir
 from os.path import exists
@@ -18,6 +19,9 @@ workdone = False
 completed = 0
 timeouts = 0
 errors = 0
+emptyqueue = 0
+
+AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 
 
 class TrackerClientNode:
@@ -48,7 +52,13 @@ class TrackerClientNode:
             self.query,
             1000 // self.throttle
         )
-        self.http_client = AsyncHTTPClient(max_clients=(self.throttle * 2))
+        # Cutting down the maximum number of queries we can handle at a time
+        # does decrease the latency in-betweem requests. However, the wait
+        # between requests still increases until we begin to choke
+        # self.http_client = AsyncHTTPClient(max_clients=(self.throttle // 2))
+        # self.http_client = AsyncHTTPClient(max_clients=(self.throttle * 2))
+        self.http_client = AsyncHTTPClient(max_clients=self.throttle)
+        self.loop = ioloop.IOLoop.current()
         self._setupLogging()
 
     def _setupLogging(self):
@@ -78,7 +88,10 @@ class TrackerClientNode:
 
     def on_message(self, message):
         if message is not None:
-            TrackerClientNode.workqueue.put_nowait(loads(message))
+            # TrackerClientNode.workqueue.put_nowait(loads(message))
+            m = loads(message)
+            for work in m:
+                TrackerClientNode.workqueue.put_nowait(work)
             self.log.debug('Got work from server')
         else:
             global workdone
@@ -87,10 +100,12 @@ class TrackerClientNode:
             workdone = True
 
     async def query(self):
+        global emptyqueue
         try:
             work = TrackerClientNode.workqueue.get_nowait()
         except QueueEmpty:
             self.log.debug('Empty queue')
+            emptyqueue += 1
             return
         global completed
         global timeouts
@@ -129,16 +144,19 @@ class TrackerClientNode:
             )
             errors += 1
             return
-        await self.conn.write_message(
-            dumps(
-                APIResult(
-                    response.body,
-                    response.request.start_time,
-                    work[2],
-                    work[0]
-                )
-            ),
-            True
+        self.loop.add_callback(
+            partial(
+                self.conn.write_message,
+                dumps(
+                    APIResult(
+                        response.body,
+                        response.request.start_time,
+                        work[2],
+                        work[0]
+                    )
+                ),
+                True
+            )
         )
         completed += 1
         end = datetime.now()
@@ -147,40 +165,6 @@ class TrackerClientNode:
             work[0],
             (end - start).total_seconds()
         )
-        # try:
-        #     a = APIResult(
-        #         tuple(
-        #             Player(
-        #                 p['account_id'],
-        #                 p['nickname'],
-        #                 p['created_at'],
-        #                 p['last_battle_time'],
-        #                 p['updated_at'],
-        #                 p['statistics']['all']['battles']
-        #             ) for __, p in json_decode(
-        #                 response.body)['data'].items() if p),
-        #         response.request.start_time,
-        #         work[2],
-        #         work[0]
-        #     )
-        #     completed += 1
-        #     await self.conn.write_message(dumps(a), True)
-        #     end = datetime.now()
-        #     self.log.debug(
-        #         'Batch %i: %f seconds of runtime',
-        #         work[0],
-        #         (end - start).total_seconds()
-        #     )
-        # except ValueError:
-        #     errors += 1
-        #     self.log.error(
-        #         'Batch %i: No data for %s',
-        #         work[0],
-        #         json_decode(response.body)
-        #     )
-        # except KeyError:
-        #     errors += 1
-        #     self.log.error('Batch %i: %s', work[0], response.body)
 
     async def connect(self):
         wsproto = 'ws' if not self.ssl else 'wss'
@@ -221,10 +205,11 @@ class TelemetryClientNode:
 
     async def send_update(self):
         self.conn.write_message(
-            ',{},{},{}'.format(
+            ',{},{},{},{}'.format(
                 completed,
                 timeouts,
-                errors
+                errors,
+                emptyqueue
             )
         )
 

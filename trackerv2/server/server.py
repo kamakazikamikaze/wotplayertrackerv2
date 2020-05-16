@@ -2,6 +2,7 @@ import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
 from datetime import datetime
+from functools import partial
 from ipaddress import ip_address
 from json.decoder import JSONDecodeError
 import linecache
@@ -93,7 +94,7 @@ def _setupLogging(conf):
         fh.setFormatter(formatter)
         telelogger.addHandler(fh)
         telelogger.setLevel(logging.DEBUG)
-        telelogger.debug('IP,Completed,Timeouts,Errors')
+        telelogger.debug('IP,Completed,Timeouts,Errors,Empty Queue')
     else:
         nu = logging.NullHandler()
         telelogger.addHandler(nu)
@@ -284,7 +285,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
         logger.info('Worker %s joined', genuuid(client))
         await self.send_work()
         WorkWSHandler.wschecks[client] = ioloop.PeriodicCallback(
-            self.send_work, 500)
+            self.send_work, 250)
         WorkWSHandler.wschecks[client].start()
         WorkWSHandler.wsconns.add(self)
 
@@ -297,6 +298,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
             self.close()
             return
         client = self.request.remote_ip
+        loop = ioloop.IOLoop.current()
+        assignments = []
         while len(assignedwork[client]) < WorkWSHandler.maxwork[client]:
             try:
                 work = stalework.pop()
@@ -310,8 +313,17 @@ class WorkWSHandler(websocket.WebSocketHandler):
                     if len(stalework) == 0 and assignedworkcount == 0:
                         workdone.append(True)
                         logger.info('Work done')
-                    return
-            await self.write_message(dumps(work), True)
+                    # return
+                    break
+            # await self.write_message(dumps(work), True)
+            assignments.append(work)
+            # loop.add_callback(
+            #     partial(
+            #         self.write_message,
+            #         dumps(work),
+            #         True
+            #     )
+            # )
             assignedwork[client][work[0]] = work
             timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
@@ -320,6 +332,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
                 work
             )
             assignedworkcount += 1
+        if assignments:
+            await self.write_message(dumps(assignments), True)
 
     def on_close(self):
         client = self.request.remote_ip
@@ -359,6 +373,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
             # Don't decrement count unless assigned work is removed
             assignedworkcount -= 1
         completedcount += 1
+        # ioloop.IOLoop.current().add_callback(self.send_work)
         await self.send_work()
 
 

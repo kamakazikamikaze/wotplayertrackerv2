@@ -386,23 +386,22 @@ class TelemetryWSHandler(websocket.WebSocketHandler):
         telelogger.debug(genuuid(self.request.remote_ip) + message)
 
 
-async def send_to_elasticsearch(conf, conn):
+async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
     r"""
     Send updates to Elasticsearch.
 
     This method should be called once work has concluded.
     """
-    today = datetime.utcnow()
     totals = create_generator_totals(
-        today,
+        day,
         await conn.fetch('SELECT * FROM total_battles_{}'.format(
-            today.strftime('%Y_%m_%d'))))
+            day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending totals')
     await send_data(conf, totals)
     diffs = create_generator_diffs(
-        today,
+        day,
         await conn.fetch('SELECT * FROM diff_battles_{}'.format(
-            today.strftime('%Y_%m_%d'))))
+            day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending diffs')
     await send_data(conf, diffs)
     player_ids = set.union(

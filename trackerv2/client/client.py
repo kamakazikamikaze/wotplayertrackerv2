@@ -314,7 +314,8 @@ def query_hander(config, workqueue, resultqueue, workdone, workers):
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(
+    asyncio.run(
+        # loop.run_until_complete(
         query_loop(
             config,
             workqueue,
@@ -366,7 +367,8 @@ if __name__ == '__main__':
         for worker in query_workers:
             worker.start()
         result_worker.start()
-        loop.run_until_complete(
+        asyncio.run(
+            # loop.run_until_complete(
             work_handler(
                 config,
                 work_queue,

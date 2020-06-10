@@ -109,118 +109,6 @@ class TelemetryClientNode(object):
                 await asyncio.sleep(self.sleep)
 
 
-class QueryAPI(object):
-
-    data_fields = (
-        'created_at,'
-        'account_id,'
-        'last_battle_time,'
-        'nickname,'
-        'updated_at,'
-        'statistics.all.battles'
-    )
-    api_url = 'https://api-{}-console.worldoftanks.com/wotx/account/info/'
-
-    def __init__(self, config, session, workqueue, resultqueue, workdone):
-        self.key = config['application_id']
-        self.debug = False if 'debug' not in config else config['debug']
-        self.timeout = 5 if 'timeout' not in config else config['timeout']
-        self._setupLogging()
-        self.session = session
-        self.work = workqueue
-        self.results = resultqueue
-        self.workdone = workdone
-
-    def _setupLogging(self):
-        if not exists('log'):
-            mkdir('log')
-        self.log = logging.getLogger('Client.Query')
-        formatter = logging.Formatter(
-            '%(asctime)s.%(msecs)03d | %(name)-14s | %(levelname)-8s | %(message)s',
-            datefmt='%m-%d %H:%M:%S'
-        )
-        if self.debug:
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.WARNING)
-            ch.setFormatter(formatter)
-            fh = logging.FileHandler(
-                datetime.now().strftime('log/client_%Y_%m_%d.log'))
-            fh.setLevel(logging.DEBUG)
-            ch.setLevel(logging.DEBUG)
-            fh.setFormatter(formatter)
-            self.log.addHandler(fh)
-            self.log.addHandler(ch)
-        else:
-            nu = logging.NullHandler()
-            self.log.addHandler(nu)
-        self.log.setLevel(logging.DEBUG if self.debug else logging.INFO)
-
-    async def query(self):
-        try:
-            work = self.work.get_nowait()
-        except Empty:
-            self.log.warning('Queue empty')
-            self.workdone[3] += 1
-            return
-        self.log.debug('Batch %i: Starting', work[0])
-        start = datetime.now()
-        params = {
-            'account_id': ','.join(map(str, range(*work[1]))),
-            'application_id': self.key,
-            'fields': self.data_fields,
-            'language': 'en'
-        }
-        try:
-            # self.workdone[4] += 1
-            self.log.debug('Batch %i: Querying API', work[0])
-            response = await self.session.get(
-                self.api_url.format(work[2]),
-                params=params
-            )
-            self.log.debug(
-                'Batch %i: %f seconds to complete request',
-                work[0],
-                (datetime.now() - start).total_seconds()
-            )
-            # self.workdone[4] -= 1
-        except aiohttp.ClientConnectionError:
-            # self.workdone[4] -= 1
-            self.workdone[1] += 1
-            self.work.put_nowait(work)
-            self.log.warning('Batch %i: Timeout reached', work[0])
-            return
-        if response.status != 200:
-            self.work.put_nowait(work)
-            self.log.warning(
-                'Batch %i: Status code %i',
-                work[0],
-                response.status
-            )
-            self.workdone[2] += 1
-            return
-        self.log.debug('Batch %i: Awaiting full result response', work[0])
-        result = await response.json()
-        if 'error' in result:
-            self.work.put_nowait(work)
-            self.log.error('Batch %i: %s', work[0], str(result))
-            return
-        self.log.debug('Batch %i: Sending JSON to result queue', work[0])
-        self.results.put_nowait(
-            (
-                result,
-                start,
-                work
-            )
-        )
-        self.workdone[0] += 1
-        end = datetime.now()
-        self.log.debug(
-            'Batch %i: %f seconds of runtime',
-            work[0],
-            (end - start).total_seconds()
-        )
-
-
 class ResultProcessor(object):
 
     def __init__(self, config, resultqueue, returnqueue, workdone):
@@ -402,11 +290,9 @@ async def query_loop(config, workqueue, resultqueue, workdone, workers):
     gap = (1 / config['throttle']) * workers
     conn = aiohttp.TCPConnector(ttl_dns_cache=3600)
     async with aiohttp.ClientSession(connector=conn) as session:
-        # worker = QueryAPI(config, session, workqueue, resultqueue, workdone)
         log = _setupLogging(config)
         # Reference: https://stackoverflow.com/a/48682456/1993468
         while not workdone[-1]:
-            # asyncio.ensure_future(worker.query())
             asyncio.ensure_future(
                 query(
                     config['application_id'],
@@ -422,11 +308,9 @@ async def query_loop(config, workqueue, resultqueue, workdone, workers):
 
 
 def query_hander(config, workqueue, resultqueue, workdone, workers):
-    # uvloop.install()
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    # loop.run_until_complete(
     asyncio.run(
         query_loop(
             config,
@@ -459,7 +343,6 @@ if __name__ == '__main__':
     return_queue = manager.Queue()
     workers = 1
     try:
-        # uvloop.install()
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
         loop = asyncio.get_event_loop()
         config = load_config(args.config)
@@ -481,7 +364,6 @@ if __name__ == '__main__':
         for worker in query_workers:
             worker.start()
         result_worker.start()
-        # loop.run_until_complete(
         asyncio.run(
             work_handler(
                 config,

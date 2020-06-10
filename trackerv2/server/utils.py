@@ -121,7 +121,7 @@ def create_server_config(filename : str = './config/server.json'):
         'debug access': ['127.0.0.1'],
         'telemetry': {
             'file': 'logs/telemetry-%Y_%m_%d',
-            'interval': 5000  # milliseconds
+            'interval': 5  # seconds
         }
     }
     with open(filename, 'w') as f:

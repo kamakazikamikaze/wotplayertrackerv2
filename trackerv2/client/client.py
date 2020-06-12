@@ -19,7 +19,7 @@ class TrackerClientNode(object):
     # solution for clients with multiple public IP addresses, which is
     # unlikely, we'll bind this to the class to share the work queue
 
-    def __init__(self, config, session, work_queue):
+    def __init__(self, config, session, work_queue, workdone):
         self.server = config['server']
         self.ssl = config['use ssl']
         self.endpoint = 'work'
@@ -27,6 +27,7 @@ class TrackerClientNode(object):
         self.session = session
         self._setupLogging()
         self.work_queue = work_queue
+        self.workdone = workdone
 
     def _setupLogging(self):
         if not exists('log'):
@@ -53,12 +54,12 @@ class TrackerClientNode(object):
         self.log.setLevel(logging.DEBUG if self.debug else logging.INFO)
 
     async def run(self):
-        global workdone
         wsproto = 'ws' if not self.ssl else 'wss'
         async with self.session.ws_connect(
             urljoin(
                 self.server.replace('http', wsproto),
-                self.endpoint)
+                self.endpoint
+            )
         ) as ws:
             self.ws = ws
             async for msg in ws:
@@ -66,24 +67,29 @@ class TrackerClientNode(object):
                     for work in loads(msg.data):
                         self.work_queue.put_nowait(work)
                         self.log.debug('New task')
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                elif msg.type in (aiohttp.WSMsgType.CLOSE.
+                                  aiohttp.WSMsgType.CLOSING,
+                                  aiohttp.WSMsgType.CLOSED):
                     self.log.info('Server is closing connection')
-                    workdone[-1] = True
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     self.log.error('Websocket error!')
                     break
+                else:
+                    self.log.error('Unknown type: %s', str(msg.type))
+            self.workdone[-1] = True
             del self.ws
 
 
 class TelemetryClientNode(object):
 
-    def __init__(self, config, session):
+    def __init__(self, config, session, workdone):
         self.server = config['server']
         self.ssl = config['use ssl']
         self.endpoint = 'telemetry'
         self.session = session
         self.sleep = config['telemetry']
+        self.workdone = workdone
 
     async def run(self):
         global workdone
@@ -91,9 +97,10 @@ class TelemetryClientNode(object):
         async with self.session.ws_connect(
             urljoin(
                 self.server.replace('http', wsproto),
-                self.endpoint)
+                self.endpoint
+            )
         ) as ws:
-            while not workdone[-1]:
+            while not self.workdone[-1]:
                 await ws.send_str(
                     ',{},{},{},{},{},{},{},{}'.format(
                         # completed,
@@ -144,28 +151,31 @@ class ResultProcessor(object):
 
     def run(self):
         while not self.workdone[-1]:
-            # Ok to block
-            response, start, work = self.results.get()
             try:
-                self.return_queue.put_nowait(
-                    APIResult(
-                        tuple(
-                            Player(
-                                p['account_id'],
-                                p['nickname'],
-                                p['created_at'],
-                                p['last_battle_time'],
-                                p['updated_at'],
-                                p['statistics']['all']['battles']
-                            ) for __, p in response['data'].items() if p),
-                        start.timestamp(),
-                        work[2],
-                        work[0]
+                # Ok to block
+                response, start, work = self.results.get(timeout=1)
+                try:
+                    self.return_queue.put_nowait(
+                        APIResult(
+                            tuple(
+                                Player(
+                                    p['account_id'],
+                                    p['nickname'],
+                                    p['created_at'],
+                                    p['last_battle_time'],
+                                    p['updated_at'],
+                                    p['statistics']['all']['battles']
+                                ) for __, p in response['data'].items() if p),
+                            start.timestamp(),
+                            work[2],
+                            work[0]
+                        )
                     )
-                )
-            except KeyError:
-                self.log.warning('Batch %i has no "data" key', work[0])
-                self.log.warning('Batch %i: %s', work[0], str(response))
+                except KeyError:
+                    self.log.warning('Batch %i has no "data" key', work[0])
+                    self.log.warning('Batch %i: %s', work[0], str(response))
+            except Empty:
+                pass
 
 
 def _setupLogging(config):
@@ -270,9 +280,9 @@ async def work_handler(config, workqueue, returnqueue, workdone):
     loop = asyncio.get_running_loop()
     # Share a session between both websocket handlers
     async with aiohttp.ClientSession() as session:
-        client = TrackerClientNode(config, session, workqueue)
+        client = TrackerClientNode(config, session, workqueue, workdone)
         if 'telemetry' in config:
-            telemetry = TelemetryClientNode(config, session)
+            telemetry = TelemetryClientNode(config, session, workdone)
             asyncio.ensure_future(telemetry.run())
         asyncio.ensure_future(client.run())
         while not workdone[-1]:
@@ -377,8 +387,6 @@ if __name__ == '__main__':
         result_worker.join()
     except KeyboardInterrupt:
         print('Shutting down')
-        ioloop.IOLoop.current().stop()
-        exitcall.stop()
         for worker in query_workers:
             worker.terminate()
-        result_processor.terminate()
+        result_worker.terminate()

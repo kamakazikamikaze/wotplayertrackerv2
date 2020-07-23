@@ -212,7 +212,7 @@ async def query(key, session, workqueue, resultqueue, workdone, log):
         log.warning('Queue empty')
         workdone[3] += 1
         return
-    api_url = 'https://api-{}-console.worldoftanks.com/wotx/account/info/'
+    api_url = 'https://api-console.worldoftanks.com/wotx/account/info/'
     log.debug('Batch %i: Starting', work[0])
     start = datetime.now()
     params = {
@@ -231,7 +231,7 @@ async def query(key, session, workqueue, resultqueue, workdone, log):
     try:
         log.debug('Batch %i: Querying API', work[0])
         response = await session.get(
-            api_url.format(work[2]),
+            api_url,
             params=params
         )
         log.debug(

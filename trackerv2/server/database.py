@@ -76,14 +76,20 @@ async def expand_max_players(config, filename='./config/server.json'):
 
     conn = await asyncpg.connect(**dbconf)
 
-    maximum = await conn.fetch(
-        'SELECT MAX(account_id), console FROM players GROUP BY console'
-    )
-    for record in maximum:
-        if record['console'] == 'xbox':
-            max_xbox = record['max']
-        else:
-            max_ps4 = record['max']
+    for platform in ('xbox', 'ps4'):
+        try:
+            maximum = await conn.fetch(
+                'SELECT MAX(account_id) FROM players WHERE account_id BETWEEN $1 AND $2',
+                config[platform]['max account'] - 50000,
+                config[platform]['max account']
+            )
+            for record in maximum:
+                if platform == 'xbox':
+                    max_xbox = record['max']
+                else:
+                    max_ps4 = record['max']
+        except KeyError:
+            pass
 
     if 'max account' not in config['xbox']:
         config['xbox']['max account'] = max_xbox + 200000

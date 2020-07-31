@@ -164,10 +164,11 @@ class ResultProcessor(object):
                                     p['created_at'],
                                     p['last_battle_time'],
                                     p['updated_at'],
-                                    p['statistics']['all']['battles']
+                                    p['statistics']['all']['battles'],
+                                    'xbox' if p[
+                                        'nickname'][-2:] == '-x' else 'ps'
                                 ) for __, p in response['data'].items() if p),
                             start.timestamp(),
-                            work[2],
                             work[0]
                         )
                     )

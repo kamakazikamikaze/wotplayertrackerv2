@@ -139,12 +139,12 @@ class Player(NamedTuple):
     last_battle_time: int
     updated_at: int
     battles: int
+    console: str
 
 
 class APIResult(NamedTuple):
     players: bytes
     last_api_pull: int
-    console: str
     batch: int
 
 def expand_debug_access_ips(config : dict) -> list:

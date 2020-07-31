@@ -479,7 +479,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                     (
                         'INSERT INTO players ('
                         'account_id, nickname, created_at, last_battle_time,'
-                        'updated_at, battles, _last_api_pull, console)'
+                        'updated_at, battles, console, _last_api_pull)'
                         'VALUES ('
                         '$1::int, '
                         '$2::text, '
@@ -487,17 +487,19 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                         'to_timestamp($4)::timestamp, '
                         'to_timestamp($5)::timestamp, '
                         '$6::int, '
-                        'to_timestamp($7)::timestamp, '
-                        '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
+                        '$7::text, '
+                        'to_timestamp($8)::timestamp) '
+                        'ON CONFLICT (account_id) DO UPDATE SET ('
                         'nickname, last_battle_time, updated_at, battles, '
-                        '_last_api_pull) = ('
+                        'console, _last_api_pull) = ('
                         '$2::text, '
                         'to_timestamp($4)::timestamp, '
                         'to_timestamp($5)::timestamp, '
                         '$6::int, '
-                        'to_timestamp($7)::timestamp)'
+                        '$7::text, '
+                        'to_timestamp($8)::timestamp)'
                     ),
-                    tuple((*p, results[1], results[2]) for p in results[0])
+                    tuple((*p, results[1]) for p in results[0])
                 )
                 logger.debug(
                     'Process-%i: Async-%i submitted batch %i',

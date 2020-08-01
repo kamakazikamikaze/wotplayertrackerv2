@@ -184,6 +184,7 @@ def create_generator_totals(day, query_results):
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
+            "console": player['console'],
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)
@@ -197,6 +198,7 @@ def create_generator_diffs(day, query_results):
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
+            "console": player['console'],
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)

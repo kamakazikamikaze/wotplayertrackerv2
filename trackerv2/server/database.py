@@ -19,14 +19,18 @@ async def setup_database(db):
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
-        battles integer NOT NULL)'''.format(
+        battles integer NOT NULL,
+        console varchar(4) NOT NULL)'''.format(
         datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
     )
 
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
-        battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
+        battles integer NOT NULL,
+        console varchar(4) NOT NULL)'''.format(
+        datetime.utcnow().strftime('diff_battles_%Y_%m_%d'))
+    )
 
     # We shouldn't get a duplicate error because of the REPLACE statement
     try:
@@ -36,8 +40,8 @@ async def setup_database(db):
             $func$
             BEGIN
                IF (OLD.battles < NEW.battles) THEN
-                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles - $2.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
                END IF;
                RETURN NEW;
             END

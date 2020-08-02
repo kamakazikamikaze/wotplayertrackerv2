@@ -61,7 +61,7 @@ async def setup_database(db):
               RETURNS trigger AS
             $func$
             BEGIN
-              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;''')

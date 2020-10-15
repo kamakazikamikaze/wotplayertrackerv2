@@ -43,6 +43,7 @@ registered = set()
 startwork = False
 logger = logging.getLogger('WoTServer')
 telelogger = logging.getLogger('Telemetry')
+statlogger = logging.getLogger('ServerStats')
 db_helpers = None
 allowed_debug = None
 
@@ -101,6 +102,26 @@ def _setupLogging(conf):
         telelogger.addHandler(nu)
         telelogger.setLevel(logging.ERROR)
 
+    if 'stats' in conf:
+        statlogger.propagate = False
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d,%(message)s',
+            datefmt='%H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
+        fh = logging.FileHandler(
+            datetime.now().strftime(conf['stats']['file']))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        statlogger.addHandler(fh)
+        statlogger.setLevel(logging.DEBUG)
+        statlogger.debug('Completed,Stale,Assigned,Queue')
+    else:
+        nu = logging.NullHandler()
+        statlogger.addHandler(nu)
+        statlogger.setLevel(logging.ERROR)
+
 
 def move_to_stale(ipaddress, work):
     r"""
@@ -111,6 +132,14 @@ def move_to_stale(ipaddress, work):
     stalework.append(work)
     assignedworkcount -= 1
 
+def write_stats():
+    statlogger.debug(
+        '%i,%i,%i,%i',
+        completedcount,
+        len(stalework),
+        assignedworkcount,
+        received_queue.qsize()
+    )
 
 class MainHandler(web.RequestHandler):
     r"""
@@ -392,23 +421,32 @@ async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
 
     This method should be called once work has concluded.
     """
+    # Generators get exhausted after a single Elasticsearch instance. Although
+    # the intent was to save on memory, I'm afraid we need to gather all docs
     totals = create_generator_totals(
         day,
         await conn.fetch('SELECT * FROM total_battles_{}'.format(
             day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending totals')
+    totals = [t for t in totals]
     await send_data(conf, totals)
     diffs = create_generator_diffs(
         day,
         await conn.fetch('SELECT * FROM diff_battles_{}'.format(
             day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending diffs')
+    diffs = [d for d in diffs]
     await send_data(conf, diffs)
     player_ids = set.union(
         set(map(lambda p: int(p['_source']['account_id']), totals)),
-        set(map(lambda p: int(p['_source']['account_id']), diffs)))
-    stmt = await conn.prepare('SELECT * FROM players WHERE account_id=$1')
+        set(map(lambda p: int(p['_source']['account_id']), diffs))
+    )
+    del diffs, totals
+    stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
     players = create_generator_players(stmt, player_ids)
+    players = [p async for p in players]
+    eslog = logging.getLogger('elasticsearch')
+    eslog.setLevel(logging.ERROR)
     logger.info('ES: Sending players')
     await send_data(conf, players, 'update')
     logger.info('ES: Finished')
@@ -477,7 +515,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
             try:
                 __ = await conn.executemany(
                     (
-                        'INSERT INTO players ('
+                        'INSERT INTO temp_players ('
                         'account_id, nickname, created_at, last_battle_time,'
                         'updated_at, battles, console, _last_api_pull)'
                         'VALUES ('
@@ -489,15 +527,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                         '$6::int, '
                         '$7::text, '
                         'to_timestamp($8)::timestamp) '
-                        'ON CONFLICT (account_id) DO UPDATE SET ('
-                        'nickname, last_battle_time, updated_at, battles, '
-                        'console, _last_api_pull) = ('
-                        '$2::text, '
-                        'to_timestamp($4)::timestamp, '
-                        'to_timestamp($5)::timestamp, '
-                        '$6::int, '
-                        '$7::text, '
-                        'to_timestamp($8)::timestamp)'
+                        'ON CONFLICT DO NOTHING'
                     ),
                     tuple((*p, results[1]) for p in results[0])
                 )
@@ -551,8 +581,24 @@ async def try_exit(config, configpath):
             helper.join()
         logger.info('Proceeding with post-run cleanup')
         exitcall.stop()
+        if 'stats' in config:
+            serverstatcall.stop()
         update = False
         conn = await connect(**config['database'])
+        logger.info('Merging temporary table into primary table')
+        # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
+        __ = await conn.execute('''
+            INSERT INTO players (account_id, nickname, console, created_at,
+                last_battle_time, updated_at, battles, _last_api_pull)
+            SELECT * FROM temp_players
+            ON CONFLICT (account_id)
+            DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
+            console, _last_api_pull) = (EXCLUDED.nickname,
+            EXCLUDED.last_battle_time, EXCLUDED.updated_at, EXCLUDED.battles,
+            EXCLUDED.console, EXCLUDED._last_api_pull)
+            WHERE players.battles <> EXCLUDED.battles''')
+        __ = await conn.execute('DROP TABLE temp_players')
+        logger.info('Dropped temporary table')
         if 'expand' not in config or config['expand']:
             maximum = await conn.fetch(
                 (
@@ -717,6 +763,13 @@ if __name__ == '__main__':
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(
             lambda: try_exit(server_config, args.config), 1000)
+        if 'stats' in server_config:
+            if 'interval' not in server_config['stats']:
+                server_config['stats'] = 1
+            serverstatcall = ioloop.PeriodicCallback(
+                write_stats,
+                server_config['stats']['interval'] * 1000
+            )
         db_helpers = [
             Process(
                 target=result_handler,
@@ -732,6 +785,8 @@ if __name__ == '__main__':
         for helper in db_helpers:
             helper.start()
         exitcall.start()
+        if 'stats' in server_config:
+            serverstatcall.start()
         logger.info('Starting server')
         ioloop.IOLoop.current().start()
         end = datetime.now()
@@ -742,6 +797,8 @@ if __name__ == '__main__':
         ioloop.IOLoop.current().stop()
         try:
             exitcall.stop()
+            if 'stats' in server_config:
+                serverstatcall.stop()
             for helper in db_helpers:
                 helper.terminate()
         except NameError:

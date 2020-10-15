@@ -80,7 +80,7 @@ async def _send_to_cluster_skip_errors(conf, data, retry=5):
 
 async def _update_to_cluster(conf, data):
     es = Elasticsearch(**conf)
-    if isinstance(data, GeneratorType):
+    if any(isinstance(data, t) for t in (GeneratorType, set, list)):
         for doc in data:
             try:
                 es.update(

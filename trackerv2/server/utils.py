@@ -122,6 +122,10 @@ def create_server_config(filename : str = './config/server.json'):
         'telemetry': {
             'file': 'logs/telemetry-%Y_%m_%d',
             'interval': 5  # seconds
+        },
+        'stats': {
+            'file': 'logs/server-stats-%Y_%m_%d',
+            'interval': 1  # seconds
         }
     }
     with open(filename, 'w') as f:

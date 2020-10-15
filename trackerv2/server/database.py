@@ -16,6 +16,19 @@ async def setup_database(db):
             battles integer NOT NULL,
             _last_api_pull timestamp NOT NULL)''')
 
+    __ = await conn.execute('DROP TABLE IF EXISTS temp_players')
+
+    __ = await conn.execute('''
+        CREATE TABLE temp_players (
+            account_id integer PRIMARY KEY,
+            nickname varchar(34) NOT NULL,
+            console varchar(4) NOT NULL,
+            created_at timestamp NOT NULL,
+            last_battle_time timestamp NOT NULL,
+            updated_at timestamp NOT NULL,
+            battles integer NOT NULL,
+            _last_api_pull timestamp NOT NULL)''')
+
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),

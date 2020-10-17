@@ -587,16 +587,20 @@ async def try_exit(config, configpath):
         conn = await connect(**config['database'])
         logger.info('Merging temporary table into primary table')
         # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
-        __ = await conn.execute('''
-            INSERT INTO players (account_id, nickname, console, created_at,
-                last_battle_time, updated_at, battles, _last_api_pull)
-            SELECT * FROM temp_players
-            ON CONFLICT (account_id)
-            DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
-            console, _last_api_pull) = (EXCLUDED.nickname,
-            EXCLUDED.last_battle_time, EXCLUDED.updated_at, EXCLUDED.battles,
-            EXCLUDED.console, EXCLUDED._last_api_pull)
-            WHERE players.battles <> EXCLUDED.battles''')
+        for work in setup_work(config):
+            __ = await conn.execute('''
+                INSERT INTO players (account_id, nickname, console, created_at,
+                    last_battle_time, updated_at, battles, _last_api_pull)
+                SELECT * FROM temp_players WHERE account_id BETWEEN $1 AND $2
+                ON CONFLICT (account_id)
+                DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
+                console, _last_api_pull) = (EXCLUDED.nickname,
+                EXCLUDED.last_battle_time, EXCLUDED.updated_at,
+                EXCLUDED.battles, EXCLUDED.console, EXCLUDED._last_api_pull)
+                WHERE players.battles <> EXCLUDED.battles''',
+                work[1][0],
+                work[1][1]
+            )
         __ = await conn.execute('DROP TABLE temp_players')
         logger.info('Dropped temporary table')
         if 'expand' not in config or config['expand']:

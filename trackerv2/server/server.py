@@ -448,7 +448,7 @@ async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
     eslog = logging.getLogger('elasticsearch')
     eslog.setLevel(logging.ERROR)
     logger.info('ES: Sending players')
-    await send_data(conf, players, 'update')
+    await send_data(conf, players)
     logger.info('ES: Finished')
 
 

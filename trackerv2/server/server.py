@@ -604,20 +604,24 @@ async def try_exit(config, configpath):
         __ = await conn.execute('DROP TABLE temp_players')
         logger.info('Dropped temporary table')
         if 'expand' not in config or config['expand']:
-            max_xbox = await conn.fetch(
+            result = await conn.fetch(
                 (
                     'SELECT MAX(account_id) FROM players '
                     'WHERE account_id < $1'
                 ),
                 config['xbox']['max account']
-            )['max']
-            max_ps4 = await conn.fetch(
+            )
+            for record in result:
+                max_xbox = record['max']
+            result = await conn.fetch(
                 (
                     'SELECT MAX(account_id) FROM players '
                     'WHERE account_id < $1'
                 ),
                 config['ps4']['max account']
-            )['max']
+            )
+            for record in result:
+                max_ps4 = record['max']
             if 'max account' not in config['xbox']:
                 config['xbox']['max account'] = max_xbox + 200000
                 update = True

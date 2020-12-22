@@ -171,7 +171,7 @@ class DebugHandler(web.RequestHandler):
         elif uri == 'work':
             self.write(json_encode(assignedwork))
         elif uri == 'complete':
-            self.write('{} of {}'.format(completedcount, totalbatches))
+            self.write(f'{completedcount} of {totalbatches}')
         elif uri == 'queue':
             self.write(str(received_queue.qsize()))
         elif uri == 'registered':
@@ -567,6 +567,21 @@ def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
         loop.close()
 
 
+async def advance_work(config):
+    global completedcount
+    conn = await connect(**config['database'])
+    logger.info('Fetching data from table')
+    result = await conn.fetch('SELECT MAX(account_id) FROM temp_players')
+    for record in result:
+        max_account = record['max']
+    while True:
+        popped = next(workgenerator)
+        completedcount += popped[1][1] - popped[1][0]
+        if popped[1][0] <= max_account <= popped[1][1]:
+            completedcount -= popped[1][1] - max_account
+            break
+
+
 async def try_exit(config, configpath):
     if len(workdone):
         if WorkWSHandler.wsconns:
@@ -714,6 +729,10 @@ if __name__ == '__main__':
         '--recover',
         help='Recover server from a previous dump state',
         type=str)
+    agp.add_argument(
+        '--aggressive-recover',
+        action='store_true',
+        help='Recover server from a crash without additional information')
     args = agp.parse_args()
 
     if args.generate_config:
@@ -762,11 +781,15 @@ if __name__ == '__main__':
             for __ in range(workpop):
                 __ = next(workgenerator)
 
+    if args.aggressive_recover:
+        ioloop.IOLoop.current().run_sync(
+            lambda: advance_work(server_config))
+
     try:
         start = datetime.now()
         # Don't set up tables when recovering. We have explicitly coded to exit
         # if the tables already exist. Not sure if we need to modify this
-        if not args.recover:
+        if not args.recover and not args.aggressive_recover:
             ioloop.IOLoop.current().run_sync(
                 lambda: setup_database(server_config['database']))
         app = make_app(static_files, server_config, client_config)

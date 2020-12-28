@@ -67,7 +67,8 @@ async def setup_database(db):
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
-    # We shouldn't get a duplicate error because of the REPLACE statement
+    # We shouldn't get a duplicate error because of the REPLACE statement.
+    # Why do we insert into diff_battles_*? If the player is brand new, then their previous total battle count is 0. We want to include their battles too in each day's count
     try:
         __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION new_player()
@@ -75,6 +76,7 @@ async def setup_database(db):
             $func$
             BEGIN
               EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;''')

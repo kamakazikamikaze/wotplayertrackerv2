@@ -576,9 +576,8 @@ async def advance_work(config):
         max_account = record['max']
     while True:
         popped = next(workgenerator)
-        completedcount += popped[1][1] - popped[1][0]
+        completedcount += 1
         if popped[1][0] <= max_account <= popped[1][1]:
-            completedcount -= popped[1][1] - max_account
             break
 
 

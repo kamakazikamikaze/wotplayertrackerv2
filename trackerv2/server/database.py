@@ -76,7 +76,9 @@ async def setup_database(db):
             $func$
             BEGIN
               EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-              EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              IF (NEW.battles > 0) THEN
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              END IF;
               RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;''')

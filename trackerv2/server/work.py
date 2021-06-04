@@ -22,13 +22,13 @@ def setup_work(config):
         'ps4'] else config['ps4']['max account']
 
     constraints = (
-        (xbox_start_account, xbox_max_account, 'xbox'),
-        (ps4_start_account, ps4_max_account, 'ps4')
+        (xbox_start_account, xbox_max_account),
+        (ps4_start_account, ps4_max_account)
     )
-    for start, end, console in constraints:
+    for start, end in constraints:
         for p in range(start, end, 100):
             batch_id += 1
-            yield (batch_id, (p, p + 100), console)
+            yield (batch_id, (p, p + 100))
 
 
 def calculate_total_batches(config):

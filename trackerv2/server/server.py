@@ -2,6 +2,7 @@ import asyncio
 from asyncpg import create_pool, connect
 from collections import deque
 from datetime import datetime
+from functools import partial
 from ipaddress import ip_address
 from json.decoder import JSONDecodeError
 import linecache
@@ -42,6 +43,7 @@ registered = set()
 startwork = False
 logger = logging.getLogger('WoTServer')
 telelogger = logging.getLogger('Telemetry')
+statlogger = logging.getLogger('ServerStats')
 db_helpers = None
 allowed_debug = None
 
@@ -93,11 +95,32 @@ def _setupLogging(conf):
         fh.setFormatter(formatter)
         telelogger.addHandler(fh)
         telelogger.setLevel(logging.DEBUG)
-        telelogger.debug('IP,Completed,Timeouts,Errors')
+        telelogger.debug(
+            'IP,Completed,Timeouts,Errors,Empty Queue,Active Queries,Work Queue,Result Queue,Return Queue')
     else:
         nu = logging.NullHandler()
         telelogger.addHandler(nu)
         telelogger.setLevel(logging.ERROR)
+
+    if 'stats' in conf:
+        statlogger.propagate = False
+        formatter = logging.Formatter(
+            '%(asctime)s.%(msecs)03d,%(message)s',
+            datefmt='%H:%M:%S')
+        parent_dir = psplit(conf['logging']['file'])[0]
+        if not exists(parent_dir):
+            mkdir(parent_dir)
+        fh = logging.FileHandler(
+            datetime.now().strftime(conf['stats']['file']))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        statlogger.addHandler(fh)
+        statlogger.setLevel(logging.DEBUG)
+        statlogger.debug('Completed,Stale,Assigned,Queue')
+    else:
+        nu = logging.NullHandler()
+        statlogger.addHandler(nu)
+        statlogger.setLevel(logging.ERROR)
 
 
 def move_to_stale(ipaddress, work):
@@ -109,6 +132,14 @@ def move_to_stale(ipaddress, work):
     stalework.append(work)
     assignedworkcount -= 1
 
+def write_stats():
+    statlogger.debug(
+        '%i,%i,%i,%i',
+        completedcount,
+        len(stalework),
+        assignedworkcount,
+        received_queue.qsize()
+    )
 
 class MainHandler(web.RequestHandler):
     r"""
@@ -140,7 +171,7 @@ class DebugHandler(web.RequestHandler):
         elif uri == 'work':
             self.write(json_encode(assignedwork))
         elif uri == 'complete':
-            self.write('{} of {}'.format(completedcount, totalbatches))
+            self.write(f'{completedcount} of {totalbatches}')
         elif uri == 'queue':
             self.write(str(received_queue.qsize()))
         elif uri == 'registered':
@@ -284,7 +315,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
         logger.info('Worker %s joined', genuuid(client))
         await self.send_work()
         WorkWSHandler.wschecks[client] = ioloop.PeriodicCallback(
-            self.send_work, 500)
+            self.send_work, 250)
         WorkWSHandler.wschecks[client].start()
         WorkWSHandler.wsconns.add(self)
 
@@ -297,6 +328,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
             self.close()
             return
         client = self.request.remote_ip
+        loop = ioloop.IOLoop.current()
+        assignments = []
         while len(assignedwork[client]) < WorkWSHandler.maxwork[client]:
             try:
                 work = stalework.pop()
@@ -310,8 +343,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
                     if len(stalework) == 0 and assignedworkcount == 0:
                         workdone.append(True)
                         logger.info('Work done')
-                    return
-            await self.write_message(dumps(work), True)
+                    break
+            assignments.append(work)
             assignedwork[client][work[0]] = work
             timeouts[client][work[0]] = ioloop.IOLoop.current().call_later(
                 server_config['timeout'],
@@ -320,6 +353,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
                 work
             )
             assignedworkcount += 1
+        if assignments:
+            await self.write_message(dumps(assignments), True)
 
     def on_close(self):
         client = self.request.remote_ip
@@ -335,9 +370,8 @@ class WorkWSHandler(websocket.WebSocketHandler):
         try:
             results = loads(message)
             received_queue.put_nowait(results)
-            # del message
         except UnpicklingError:
-            # Will the clients ever send incomplete data?
+            logger.error('Received bad result message from %s', client)
             return
         try:
             ioloop.IOLoop.current().remove_timeout(
@@ -360,6 +394,7 @@ class WorkWSHandler(websocket.WebSocketHandler):
             # Don't decrement count unless assigned work is removed
             assignedworkcount -= 1
         completedcount += 1
+        # ioloop.IOLoop.current().add_callback(self.send_work)
         await self.send_work()
 
 
@@ -380,32 +415,40 @@ class TelemetryWSHandler(websocket.WebSocketHandler):
         telelogger.debug(genuuid(self.request.remote_ip) + message)
 
 
-async def send_to_elasticsearch(conf, conn):
+async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
     r"""
     Send updates to Elasticsearch.
 
     This method should be called once work has concluded.
     """
-    today = datetime.utcnow()
+    # Generators get exhausted after a single Elasticsearch instance. Although
+    # the intent was to save on memory, I'm afraid we need to gather all docs
     totals = create_generator_totals(
-        today,
+        day,
         await conn.fetch('SELECT * FROM total_battles_{}'.format(
-            today.strftime('%Y_%m_%d'))))
+            day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending totals')
+    totals = [t for t in totals]
     await send_data(conf, totals)
     diffs = create_generator_diffs(
-        today,
+        day,
         await conn.fetch('SELECT * FROM diff_battles_{}'.format(
-            today.strftime('%Y_%m_%d'))))
+            day.strftime('%Y_%m_%d'))))
     logger.info('ES: Sending diffs')
+    diffs = [d for d in diffs]
     await send_data(conf, diffs)
     player_ids = set.union(
         set(map(lambda p: int(p['_source']['account_id']), totals)),
-        set(map(lambda p: int(p['_source']['account_id']), diffs)))
-    stmt = await conn.prepare('SELECT * FROM players WHERE account_id=$1')
+        set(map(lambda p: int(p['_source']['account_id']), diffs))
+    )
+    del diffs, totals
+    stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
     players = create_generator_players(stmt, player_ids)
+    players = [p async for p in players]
+    eslog = logging.getLogger('elasticsearch')
+    eslog.setLevel(logging.ERROR)
     logger.info('ES: Sending players')
-    await send_data(conf, players, 'update')
+    await send_data(conf, players)
     logger.info('ES: Finished')
 
 
@@ -469,35 +512,38 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                 results = res_queue.get_nowait()
             except Empty:
                 continue
-            __ = await conn.executemany(
-                (
-                    'INSERT INTO players ('
-                    'account_id, nickname, created_at, last_battle_time,'
-                    'updated_at, battles, _last_api_pull, console)'
-                    'VALUES ('
-                    '$1::int, '
-                    '$2::text, '
-                    'to_timestamp($3)::timestamp, '
-                    'to_timestamp($4)::timestamp, '
-                    'to_timestamp($5)::timestamp, '
-                    '$6::int, '
-                    'to_timestamp($7)::timestamp, '
-                    '$8::text) ON CONFLICT (account_id) DO UPDATE SET ('
-                    'nickname, last_battle_time, updated_at, battles, '
-                    '_last_api_pull) = ('
-                    '$2::text, '
-                    'to_timestamp($4)::timestamp, '
-                    'to_timestamp($5)::timestamp, '
-                    '$6::int, '
-                    'to_timestamp($7)::timestamp)'
-                ),
-                tuple((*p, results[1], results[2]) for p in results[0])
-            )
-            logger.debug(
-                'Process-%i: Async-%i submitted batch %i',
-                par,
-                chi,
-                results.batch)
+            try:
+                __ = await conn.executemany(
+                    (
+                        'INSERT INTO temp_players ('
+                        'account_id, nickname, created_at, last_battle_time,'
+                        'updated_at, battles, console, _last_api_pull)'
+                        'VALUES ('
+                        '$1::int, '
+                        '$2::text, '
+                        'to_timestamp($3)::timestamp, '
+                        'to_timestamp($4)::timestamp, '
+                        'to_timestamp($5)::timestamp, '
+                        '$6::int, '
+                        '$7::text, '
+                        'to_timestamp($8)::timestamp) '
+                        'ON CONFLICT DO NOTHING'
+                    ),
+                    tuple((*p, results[1]) for p in results[0])
+                )
+                logger.debug(
+                    'Process-%i: Async-%i submitted batch %i',
+                    par,
+                    chi,
+                    results.batch)
+            except Exception as e:
+                logger.error(
+                    'Process-%i: Async-%i encountered: %s',
+                    par,
+                    chi,
+                    e)
+                with open('error-batch-{}.dump'.format(results.batch), 'wb') as f:
+                    dump(results, f, HIGHEST_PROTOCOL)
     logger.debug('Process-%i: Async-%i exiting', par, chi)
 
 
@@ -521,6 +567,20 @@ def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
         loop.close()
 
 
+async def advance_work(config):
+    global completedcount
+    conn = await connect(**config['database'])
+    logger.info('Fetching data from table')
+    result = await conn.fetch('SELECT MAX(account_id) FROM temp_players')
+    for record in result:
+        max_account = record['max']
+    while True:
+        popped = next(workgenerator)
+        completedcount += 1
+        if popped[1][0] <= max_account <= popped[1][1]:
+            break
+
+
 async def try_exit(config, configpath):
     if len(workdone):
         if WorkWSHandler.wsconns:
@@ -535,21 +595,47 @@ async def try_exit(config, configpath):
             helper.join()
         logger.info('Proceeding with post-run cleanup')
         exitcall.stop()
+        if 'stats' in config:
+            serverstatcall.stop()
         update = False
         conn = await connect(**config['database'])
-        if 'expand' not in config or config['expand']:
-            maximum = await conn.fetch(
-                (
-                    'SELECT MAX(account_id), console FROM '
-                    'players GROUP BY console'
-                )
+        logger.info('Merging temporary table into primary table')
+        # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
+        for work in setup_work(config):
+            __ = await conn.execute('''
+                INSERT INTO players (account_id, nickname, console, created_at,
+                    last_battle_time, updated_at, battles, _last_api_pull)
+                SELECT * FROM temp_players WHERE account_id BETWEEN $1 AND $2
+                ON CONFLICT (account_id)
+                DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
+                console, _last_api_pull) = (EXCLUDED.nickname,
+                EXCLUDED.last_battle_time, EXCLUDED.updated_at,
+                EXCLUDED.battles, EXCLUDED.console, EXCLUDED._last_api_pull)
+                WHERE players.battles <> EXCLUDED.battles''',
+                work[1][0],
+                work[1][1]
             )
-            for record in maximum:
-                if record['console'] == 'xbox':
-                    max_xbox = record['max']
-                else:
-                    max_ps4 = record['max']
-
+        __ = await conn.execute('DROP TABLE temp_players')
+        logger.info('Dropped temporary table')
+        if 'expand' not in config or config['expand']:
+            result = await conn.fetch(
+                (
+                    'SELECT MAX(account_id) FROM players '
+                    'WHERE account_id < $1'
+                ),
+                config['xbox']['max account']
+            )
+            for record in result:
+                max_xbox = record['max']
+            result = await conn.fetch(
+                (
+                    'SELECT MAX(account_id) FROM players '
+                    'WHERE account_id < $1'
+                ),
+                config['ps4']['max account']
+            )
+            for record in result:
+                max_ps4 = record['max']
             if 'max account' not in config['xbox']:
                 config['xbox']['max account'] = max_xbox + 200000
                 update = True
@@ -642,6 +728,10 @@ if __name__ == '__main__':
         '--recover',
         help='Recover server from a previous dump state',
         type=str)
+    agp.add_argument(
+        '--aggressive-recover',
+        action='store_true',
+        help='Recover server from a crash without additional information')
     args = agp.parse_args()
 
     if args.generate_config:
@@ -690,17 +780,28 @@ if __name__ == '__main__':
             for __ in range(workpop):
                 __ = next(workgenerator)
 
+    if args.aggressive_recover:
+        ioloop.IOLoop.current().run_sync(
+            lambda: advance_work(server_config))
+
     try:
         start = datetime.now()
         # Don't set up tables when recovering. We have explicitly coded to exit
         # if the tables already exist. Not sure if we need to modify this
-        if not args.recover:
+        if not args.recover and not args.aggressive_recover:
             ioloop.IOLoop.current().run_sync(
                 lambda: setup_database(server_config['database']))
         app = make_app(static_files, server_config, client_config)
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(
             lambda: try_exit(server_config, args.config), 1000)
+        if 'stats' in server_config:
+            if 'interval' not in server_config['stats']:
+                server_config['stats'] = 1
+            serverstatcall = ioloop.PeriodicCallback(
+                write_stats,
+                server_config['stats']['interval'] * 1000
+            )
         db_helpers = [
             Process(
                 target=result_handler,
@@ -716,6 +817,8 @@ if __name__ == '__main__':
         for helper in db_helpers:
             helper.start()
         exitcall.start()
+        if 'stats' in server_config:
+            serverstatcall.start()
         logger.info('Starting server')
         ioloop.IOLoop.current().start()
         end = datetime.now()
@@ -726,6 +829,8 @@ if __name__ == '__main__':
         ioloop.IOLoop.current().stop()
         try:
             exitcall.stop()
+            if 'stats' in server_config:
+                serverstatcall.stop()
             for helper in db_helpers:
                 helper.terminate()
         except NameError:

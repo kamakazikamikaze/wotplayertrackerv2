@@ -16,17 +16,34 @@ async def setup_database(db):
             battles integer NOT NULL,
             _last_api_pull timestamp NOT NULL)''')
 
+    __ = await conn.execute('DROP TABLE IF EXISTS temp_players')
+
+    __ = await conn.execute('''
+        CREATE TABLE temp_players (
+            account_id integer PRIMARY KEY,
+            nickname varchar(34) NOT NULL,
+            console varchar(4) NOT NULL,
+            created_at timestamp NOT NULL,
+            last_battle_time timestamp NOT NULL,
+            updated_at timestamp NOT NULL,
+            battles integer NOT NULL,
+            _last_api_pull timestamp NOT NULL)''')
+
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
-        battles integer NOT NULL)'''.format(
+        battles integer NOT NULL,
+        console varchar(4) NOT NULL)'''.format(
         datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
     )
 
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
-        battles integer NOT NULL)'''.format(datetime.utcnow().strftime('diff_battles_%Y_%m_%d')))
+        battles integer NOT NULL,
+        console varchar(4) NOT NULL)'''.format(
+        datetime.utcnow().strftime('diff_battles_%Y_%m_%d'))
+    )
 
     # We shouldn't get a duplicate error because of the REPLACE statement
     try:
@@ -36,8 +53,8 @@ async def setup_database(db):
             $func$
             BEGIN
                IF (OLD.battles < NEW.battles) THEN
-                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles - $2.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles - $2.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
                END IF;
                RETURN NEW;
             END
@@ -50,14 +67,18 @@ async def setup_database(db):
     except asyncpg.exceptions.DuplicateObjectError:
         pass
 
-    # We shouldn't get a duplicate error because of the REPLACE statement
+    # We shouldn't get a duplicate error because of the REPLACE statement.
+    # Why do we insert into diff_battles_*? If the player is brand new, then their previous total battle count is 0. We want to include their battles too in each day's count
     try:
         __ = await conn.execute('''
             CREATE OR REPLACE FUNCTION new_player()
               RETURNS trigger AS
             $func$
             BEGIN
-              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles) VALUES ($1.account_id, $1.battles) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              IF (NEW.battles > 0) THEN
+                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              END IF;
               RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;''')
@@ -76,14 +97,20 @@ async def expand_max_players(config, filename='./config/server.json'):
 
     conn = await asyncpg.connect(**dbconf)
 
-    maximum = await conn.fetch(
-        'SELECT MAX(account_id), console FROM players GROUP BY console'
-    )
-    for record in maximum:
-        if record['console'] == 'xbox':
-            max_xbox = record['max']
-        else:
-            max_ps4 = record['max']
+    for platform in ('xbox', 'ps4'):
+        try:
+            maximum = await conn.fetch(
+                'SELECT MAX(account_id) FROM players WHERE account_id BETWEEN $1 AND $2',
+                config[platform]['max account'] - 50000,
+                config[platform]['max account']
+            )
+            for record in maximum:
+                if platform == 'xbox':
+                    max_xbox = record['max']
+                else:
+                    max_ps4 = record['max']
+        except KeyError:
+            pass
 
     if 'max account' not in config['xbox']:
         config['xbox']['max account'] = max_xbox + 200000

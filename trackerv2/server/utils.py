@@ -121,7 +121,11 @@ def create_server_config(filename : str = './config/server.json'):
         'debug access': ['127.0.0.1'],
         'telemetry': {
             'file': 'logs/telemetry-%Y_%m_%d',
-            'interval': 5000  # milliseconds
+            'interval': 5  # seconds
+        },
+        'stats': {
+            'file': 'logs/server-stats-%Y_%m_%d',
+            'interval': 1  # seconds
         }
     }
     with open(filename, 'w') as f:
@@ -139,12 +143,12 @@ class Player(NamedTuple):
     last_battle_time: int
     updated_at: int
     battles: int
+    console: str
 
 
 class APIResult(NamedTuple):
-    players: tuple
+    players: bytes
     last_api_pull: int
-    console: str
     batch: int
 
 def expand_debug_access_ips(config : dict) -> list:

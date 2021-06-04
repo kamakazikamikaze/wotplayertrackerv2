@@ -80,7 +80,7 @@ async def _send_to_cluster_skip_errors(conf, data, retry=5):
 
 async def _update_to_cluster(conf, data):
     es = Elasticsearch(**conf)
-    if isinstance(data, GeneratorType):
+    if any(isinstance(data, t) for t in (GeneratorType, set, list)):
         for doc in data:
             try:
                 es.update(
@@ -184,6 +184,7 @@ def create_generator_totals(day, query_results):
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
+            "console": player['console'],
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)
@@ -197,6 +198,7 @@ def create_generator_diffs(day, query_results):
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
+            "console": player['console'],
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)

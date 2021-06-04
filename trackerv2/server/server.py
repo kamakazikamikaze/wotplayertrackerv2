@@ -415,7 +415,7 @@ class TelemetryWSHandler(websocket.WebSocketHandler):
         telelogger.debug(genuuid(self.request.remote_ip) + message)
 
 
-async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
+async def send_to_elasticsearch(conf, conn, day=datetime.utcnow(), skip_players=False):
     r"""
     Send updates to Elasticsearch.
 
@@ -427,28 +427,29 @@ async def send_to_elasticsearch(conf, conn, day=datetime.utcnow()):
         day,
         await conn.fetch('SELECT * FROM total_battles_{}'.format(
             day.strftime('%Y_%m_%d'))))
-    logger.info('ES: Sending totals')
+    logger.info('ES: Sending totals for {}'.format(day.strftime('%Y-%m-%d')))
     totals = [t for t in totals]
     await send_data(conf, totals)
     diffs = create_generator_diffs(
         day,
         await conn.fetch('SELECT * FROM diff_battles_{}'.format(
             day.strftime('%Y_%m_%d'))))
-    logger.info('ES: Sending diffs')
+    logger.info('ES: Sending diffs for {}'.format(day.strftime('%Y-%m-%d')))
     diffs = [d for d in diffs]
     await send_data(conf, diffs)
-    player_ids = set.union(
-        set(map(lambda p: int(p['_source']['account_id']), totals)),
-        set(map(lambda p: int(p['_source']['account_id']), diffs))
-    )
-    del diffs, totals
-    stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
-    players = create_generator_players(stmt, player_ids)
-    players = [p async for p in players]
-    eslog = logging.getLogger('elasticsearch')
-    eslog.setLevel(logging.ERROR)
-    logger.info('ES: Sending players')
-    await send_data(conf, players)
+    if not skip_players:
+        player_ids = set.union(
+            set(map(lambda p: int(p['_source']['account_id']), totals)),
+            set(map(lambda p: int(p['_source']['account_id']), diffs))
+        )
+        del diffs, totals
+        stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
+        players = create_generator_players(stmt, player_ids)
+        players = [p async for p in players]
+        eslog = logging.getLogger('elasticsearch')
+        eslog.setLevel(logging.ERROR)
+        logger.info('ES: Sending players for {}'.format(day.strftime('%Y-%m-%d')))
+        await send_data(conf, players)
     logger.info('ES: Finished')
 
 

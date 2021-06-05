@@ -3,6 +3,7 @@ files
 logs
 .git
 .gitignore
+.github
 docker-*
 !docker-entrypoint.sh
 */__pycache__

@@ -1,0 +1,11 @@
+dev
+files
+logs
+.git
+.gitignore
+docker-*
+!docker-entrypoint.sh
+*/__pycache__
+*/*.pyc
+*/*/__pycache__
+*/*/*.pyc

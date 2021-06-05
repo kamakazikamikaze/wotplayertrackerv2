@@ -1,0 +1,21 @@
+version: "2"
+services:
+  wotplayertrackerv2-server:
+    image: "kamakazikamikaze/wotplayertrackerv2:latest"
+    ports:
+      - "8888:8888"
+    environment:
+      INIT: 0
+      ROLE: server
+      PORT: 8888
+      SERVER_CONFIG: /app/config/server_config.json
+      CLIENT_CONFIG: /app/config/client_config.json
+      STATIC_FILES: /app/files
+      TRACE_MEMORY: 0
+      DB_PROCESSES: 3
+      # RECOVER_FROM_DUMP: /path/to/recovery/dump
+      AGGRESSIVE_RECOVER: 0
+      ASYNC_DB_HELPERS_PER_PROCESS: 3
+    volumes:
+      - ./config:/app/config:rw
+      - ./logs:/app/logs:rw

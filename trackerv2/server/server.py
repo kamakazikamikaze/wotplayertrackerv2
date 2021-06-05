@@ -269,7 +269,9 @@ class SetupHandler(web.RequestHandler):
         # clientconf = copy(self.clientconfig)
         # Immediately assign to catchall
         self.clientconfig['application_id'] = self.serverconfig[
-            'application_id']['catchall']
+            'application_id']['catchall']['key']
+        self.clientconfig['throttle'] = self.serverconfig[
+            'application_id']['catchall']['throttle']
         for key, subdict in self.serverconfig['application_id'].items():
             if key == 'catchall':
                 continue

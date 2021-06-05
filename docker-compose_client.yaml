@@ -1,0 +1,10 @@
+version: "2"
+services:
+  wotplayertrackerv2-client:
+    image: "kamakazikamikaze/wotplayertrackerv2:latest"
+    environment:
+      ROLE: client
+      CONFIG: /app/config/server_config.json
+    volumes:
+      - ./config:/app/config:rw
+      - ./logs:/app/logs:rw

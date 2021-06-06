@@ -2,8 +2,6 @@ name: Docker Image CI - Full
 
 on:
   push:
-    tags:
-      - 'v*'
     tags-ignore:
       - '*-base'
 

@@ -1,11 +1,9 @@
-name: Docker Image CI - Full
+name: Docker Image CI - Base
 
 on:
   push:
     tags:
-      - 'v*'
-    tags-ignore:
-      - '*-base'
+      - 'v*-base'
 
 jobs:
   docker:
@@ -21,7 +19,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v3
         with:
-          images: kamakazikamikaze/wotplayertrackerv2
+          images: kamakazikamikaze/wotplayertrackerv2-base
           tags: |
             type=schedule
             type=ref,event=tag
@@ -36,7 +34,7 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile-base
           push: true
           platforms: linux/amd64,linux/arm64/v8,linux/arm/v7,linux/arm/v6,linux/386
           tags: ${{ steps.meta.outputs.tags }}

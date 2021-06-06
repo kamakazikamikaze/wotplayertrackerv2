@@ -1,0 +1,14 @@
+FROM python:alpine
+
+ENV BASE=/app
+
+WORKDIR $BASE
+
+COPY *-requirements.txt .
+
+RUN apk add --no-cache build-base && \
+	apk add --no-cache libffi-dev && \
+	pip install -r server-requirements.txt && \
+	pip install -r client-requirements.txt && \
+	apk del build-base && \
+	apk del libffi-dev

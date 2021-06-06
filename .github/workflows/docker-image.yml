@@ -1,14 +1,12 @@
-name: Docker Image CI - Prod
+name: Docker Image CI
 
 on:
   push:
-    branches:
-      - 'master'
     tags:
       - 'v*'
 
 jobs:
-  docker-prod:
+  docker:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repo

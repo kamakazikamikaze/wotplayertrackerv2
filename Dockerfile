@@ -10,6 +10,6 @@ WORKDIR $BASE
 
 COPY . .
 
-RUN chmod +x $BASE/docker-entrypoint.sh
+RUN chmod +x $BASE/docker-entrypoint.sh && mkdir files && chmod 777 files
 
 ENTRYPOINT ["sh", "-c", "$BASE/docker-entrypoint.sh"]

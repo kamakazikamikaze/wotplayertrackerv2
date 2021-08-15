@@ -132,6 +132,7 @@ def move_to_stale(ipaddress, work):
     stalework.append(work)
     assignedworkcount -= 1
 
+
 def write_stats():
     statlogger.debug(
         '%i,%i,%i,%i',
@@ -140,6 +141,7 @@ def write_stats():
         assignedworkcount,
         received_queue.qsize()
     )
+
 
 class MainHandler(web.RequestHandler):
     r"""
@@ -499,9 +501,47 @@ async def send_missing_players_to_elasticsearch(conf, conn):
         await _send_to_cluster_skip_errors(cluster, players)
 
 
-async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
+async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl='players'):
     logger = logging.getLogger('WoTServer')
     logger.debug('Process-%i: Async-%i created', par, chi)
+    if tbl == 'players':
+        command = (
+            'INSERT INTO players ('
+            'account_id, nickname, created_at, last_battle_time,'
+            'updated_at, battles, console, _last_api_pull)'
+            'VALUES ('
+            '$1::int, '
+            '$2::text, '
+            'to_timestamp($3)::timestamp, '
+            'to_timestamp($4)::timestamp, '
+            'to_timestamp($5)::timestamp, '
+            '$6::int, '
+            '$7::text, '
+            'to_timestamp($8)::timestamp) '
+            'ON CONFLICT (account_id) DO UPDATE SET ('
+            'nickname, last_battle_time, updated_at, battles, _last_api_pull) = ('
+            '$2::text, '
+            'to_timestamp($4)::timestamp, '
+            'to_timestamp($5)::timestamp, '
+            '$6::int, '
+            'to_timestamp($8)::timestamp)'
+        )
+    else:
+        command = (
+            'INSERT INTO temp_players ('
+            'account_id, nickname, created_at, last_battle_time,'
+            'updated_at, battles, console, _last_api_pull)'
+            'VALUES ('
+            '$1::int, '
+            '$2::text, '
+            'to_timestamp($3)::timestamp, '
+            'to_timestamp($4)::timestamp, '
+            'to_timestamp($5)::timestamp, '
+            '$6::int, '
+            '$7::text, '
+            'to_timestamp($8)::timestamp) '
+            'ON CONFLICT DO NOTHING'
+        )
     while True:
         if not res_queue.qsize():
             if len(work_done):
@@ -517,21 +557,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
                 continue
             try:
                 __ = await conn.executemany(
-                    (
-                        'INSERT INTO temp_players ('
-                        'account_id, nickname, created_at, last_battle_time,'
-                        'updated_at, battles, console, _last_api_pull)'
-                        'VALUES ('
-                        '$1::int, '
-                        '$2::text, '
-                        'to_timestamp($3)::timestamp, '
-                        'to_timestamp($4)::timestamp, '
-                        'to_timestamp($5)::timestamp, '
-                        '$6::int, '
-                        '$7::text, '
-                        'to_timestamp($8)::timestamp) '
-                        'ON CONFLICT DO NOTHING'
-                    ),
+                    command,
                     tuple((*p, results[1]) for p in results[0])
                 )
                 logger.debug(
@@ -550,7 +576,7 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi):
     logger.debug('Process-%i: Async-%i exiting', par, chi)
 
 
-def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
+def result_handler(dbconf, res_queue, work_done, par, use_temp=False, pool_size=3):
     logger = logging.getLogger('WoTServer')
     # Not availabile until Python 3.7. Use 3.6-compatible syntax for now
     # asyncio.run(create_helpers(db_pool, res_queue, work_done))
@@ -563,7 +589,13 @@ def result_handler(dbconf, res_queue, work_done, par, pool_size=3):
     try:
         loop.run_until_complete(
             asyncio.gather(*[
-                send_results_to_database(db_pool, res_queue, work_done, par, c)
+                send_results_to_database(
+                    db_pool,
+                    res_queue,
+                    work_done,
+                    par,
+                    c,
+                    'players' if not use_temp else 'temp_players')
                 for c in range(pool_size)])
         )
     finally:
@@ -602,24 +634,25 @@ async def try_exit(config, configpath):
             serverstatcall.stop()
         update = False
         conn = await connect(**config['database'])
-        logger.info('Merging temporary table into primary table')
-        # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
-        for work in setup_work(config):
-            __ = await conn.execute('''
-                INSERT INTO players (account_id, nickname, console, created_at,
-                    last_battle_time, updated_at, battles, _last_api_pull)
-                SELECT * FROM temp_players WHERE account_id BETWEEN $1 AND $2
-                ON CONFLICT (account_id)
-                DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
-                console, _last_api_pull) = (EXCLUDED.nickname,
-                EXCLUDED.last_battle_time, EXCLUDED.updated_at,
-                EXCLUDED.battles, EXCLUDED.console, EXCLUDED._last_api_pull)
-                WHERE players.battles <> EXCLUDED.battles''',
-                work[1][0],
-                work[1][1]
-            )
-        __ = await conn.execute('DROP TABLE temp_players')
-        logger.info('Dropped temporary table')
+        if config.get('use temp table', False):
+            logger.info('Merging temporary table into primary table')
+            # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
+            for work in setup_work(config):
+                __ = await conn.execute('''
+                    INSERT INTO players (account_id, nickname, console, created_at,
+                        last_battle_time, updated_at, battles, _last_api_pull)
+                    SELECT * FROM temp_players WHERE account_id BETWEEN $1 AND $2
+                    ON CONFLICT (account_id)
+                    DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
+                    console, _last_api_pull) = (EXCLUDED.nickname,
+                    EXCLUDED.last_battle_time, EXCLUDED.updated_at,
+                    EXCLUDED.battles, EXCLUDED.console, EXCLUDED._last_api_pull)
+                    WHERE players.battles <> EXCLUDED.battles''',
+                    work[1][0],
+                    work[1][1]
+                )
+            __ = await conn.execute('DROP TABLE temp_players')
+            logger.info('Dropped temporary table')
         if 'expand' not in config or config['expand']:
             result = await conn.fetch(
                 (
@@ -685,6 +718,7 @@ def make_app(sfiles, serverconfig, clientconfig):
          {'path': pjoin(sfiles, 'win')}),
     ])
 
+
 if __name__ == '__main__':
     from argparse import ArgumentParser
     agp = ArgumentParser()
@@ -747,11 +781,7 @@ if __name__ == '__main__':
     server_config = load_config(args.config)
     client_config = load_config(args.client_config)
     if 'telemetry' in server_config:
-        if 'interval' in server_config['telemetry']:
-            client_config['telemetry'] = server_config['telemetry']['interval']
-        else:
-            # Default to 10 seconds
-            client_config['telemetry'] = 10000
+        client_config['telemetry'] = server_config['telemetry'].get('interval', 10)
     else:
         try:
             del client_config['telemetry']
@@ -793,7 +823,10 @@ if __name__ == '__main__':
         # if the tables already exist. Not sure if we need to modify this
         if not args.recover and not args.aggressive_recover:
             ioloop.IOLoop.current().run_sync(
-                lambda: setup_database(server_config['database']))
+                lambda: setup_database(
+                    server_config['database'],
+                    server_config.get('use temp table', False)
+                ))
         app = make_app(static_files, server_config, client_config)
         app.listen(server_config['port'])
         exitcall = ioloop.PeriodicCallback(
@@ -813,6 +846,7 @@ if __name__ == '__main__':
                     received_queue,
                     workdone,
                     parent,
+                    server_config.get('use temp table', False),
                     args.async_helpers
                 )
             ) for parent in range(args.processes or 1)

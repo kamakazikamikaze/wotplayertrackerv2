@@ -126,7 +126,8 @@ def create_server_config(filename : str = './config/server.json'):
         'stats': {
             'file': 'logs/server-stats-%Y_%m_%d',
             'interval': 1  # seconds
-        }
+        },
+        'use temp table': False
     }
     with open(filename, 'w') as f:
         dump(newconfig, f, indent=4)
@@ -150,6 +151,7 @@ class APIResult(NamedTuple):
     players: bytes
     last_api_pull: int
     batch: int
+
 
 def expand_debug_access_ips(config : dict) -> list:
     if 'debug access' not in config:

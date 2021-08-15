@@ -2,6 +2,10 @@ name: Docker Image CI - Full
 
 on:
   push:
+    branches:
+      - 'master'
+      - 'test'
+      - 'dev'
     tags-ignore:
       - '*-base'
 
@@ -21,7 +25,7 @@ jobs:
         with:
           images: kamakazikamikaze/wotplayertrackerv2
           tags: |
-            type=schedule
+            type=ref,event=branch
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=sha

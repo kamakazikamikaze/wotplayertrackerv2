@@ -12,10 +12,10 @@ services:
       CLIENT_CONFIG: /app/config/client_config.json
       STATIC_FILES: /app/files
       TRACE_MEMORY: 0
-      DB_PROCESSES: 3
+      DB_PROCESSES: 2
       # RECOVER_FROM_DUMP: /path/to/recovery/dump
       AGGRESSIVE_RECOVER: 0
-      ASYNC_DB_HELPERS_PER_PROCESS: 3
+      ASYNC_DB_HELPERS_PER_PROCESS: 5
     volumes:
       - ./config:/app/config:rw
       - ./logs:/app/logs:rw

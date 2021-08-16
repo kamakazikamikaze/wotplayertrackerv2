@@ -520,11 +520,12 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl=
             'to_timestamp($8)::timestamp) '
             'ON CONFLICT (account_id) DO UPDATE SET ('
             'nickname, last_battle_time, updated_at, battles, _last_api_pull) = ('
-            '$2::text, '
-            'to_timestamp($4)::timestamp, '
-            'to_timestamp($5)::timestamp, '
-            '$6::int, '
-            'to_timestamp($8)::timestamp)'
+            'EXCLUDED.nickname, '
+            'EXCLUDED.last_battle_time, '
+            'EXCLUDED.updated_at, '
+            'EXCLUDED.battles, '
+            'EXCLUDED._last_api_pull) '
+            'WHERE players.battles <> EXCLUDED.battles'
         )
     else:
         command = (

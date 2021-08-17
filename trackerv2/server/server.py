@@ -619,14 +619,15 @@ async def advance_work(config):
 
 async def try_exit(config, configpath):
     if len(workdone):
-        if received_queue.qsize() and WorkWSHandler.wsconns:
-            # We still have data to send to the database. Don't exit yet.
-            # If no workers, though, proceed.
-            return
         if WorkWSHandler.wsconns:
             for conn in WorkWSHandler.wsconns:
                 conn.close()
             logger.info('Released all clients')
+        ## We plan on `join`ing anyways
+        # if received_queue.qsize():
+        #     # We still have data to send to the database. Don't exit yet.
+        #     return
+        logger.info('Waiting for DB helpers to complete')
         for helper in db_helpers:
             helper.join()
         logger.info('Proceeding with post-run cleanup')
@@ -655,6 +656,7 @@ async def try_exit(config, configpath):
             __ = await conn.execute('DROP TABLE temp_players')
             logger.info('Dropped temporary table')
         if config.get('expand', False):
+            logger.info('Checking database to expand players')
             result = await conn.fetch(
                 (
                     'SELECT MAX(account_id) FROM players '
@@ -686,7 +688,6 @@ async def try_exit(config, configpath):
                 config['ps4']['max account'] += 100000
                 update = True
 
-            logger.info('Checking database to expand players')
             if update:
                 logger.info('Expanding max player configuration.')
                 logger.debug('Max Xbox account: %i', max_xbox)

@@ -603,11 +603,11 @@ def result_handler(dbconf, res_queue, work_done, par, use_temp=False, pool_size=
         loop.close()
 
 
-async def advance_work(config):
+async def advance_work(config, table='players'):
     global completedcount
     conn = await connect(**config['database'])
     logger.info('Fetching data from table')
-    result = await conn.fetch('SELECT MAX(account_id) FROM temp_players')
+    result = await conn.fetch('SELECT MAX(account_id) FROM {}'.format(table))
     for record in result:
         max_account = record['max']
     while True:
@@ -817,7 +817,7 @@ if __name__ == '__main__':
 
     if args.aggressive_recover:
         ioloop.IOLoop.current().run_sync(
-            lambda: advance_work(server_config))
+            lambda: advance_work(server_config, 'temp_players' if server_config.get('use temp table', False) else 'players'))
 
     try:
         start = datetime.now()

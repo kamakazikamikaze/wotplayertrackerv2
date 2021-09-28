@@ -32,7 +32,7 @@ then
 			python server.py "$SERVER_CONFIG" -c "$CLIENT_CONFIG" -g
 		else
 			CONDITIONALS=""
-			if [ "$AGGRESIVE_RECOVER" -ne 0 ]
+			if [ "$AGGRESSIVE_RECOVER" -ne 0 ]
 			then
 				CONDITIONALS="${CONDITIONALS} --aggressive-recover"
 			fi

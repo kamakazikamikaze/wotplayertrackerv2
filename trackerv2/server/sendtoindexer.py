@@ -29,13 +29,14 @@ async def send_data(conf, data, action='create'):
             elif action == 'update':
                 await _update_to_cluster(cluster, data)
         except (BulkIndexError, TransportError) as err:
-            print('ES: Error encountered. Offloading data.')
             print('ES: Error:', err)
-            await offload_local(
-                name,
-                cluster,
-                conf['elasticsearch']['offload'],
-                data)
+            if 'offload' in conf['elasticsearch']:
+                print('ES: Error encountered. Offloading data.')
+                await offload_local(
+                    name,
+                    cluster,
+                    conf['elasticsearch']['offload'],
+                    data)
 
 
 async def _send_to_cluster(conf, data):

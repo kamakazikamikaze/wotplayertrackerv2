@@ -607,7 +607,7 @@ async def advance_work(config, table='players'):
     global completedcount
     conn = await connect(**config['database'])
     logger.info('Fetching data from table')
-    result = await conn.fetch('SELECT MAX(account_id) FROM {}'.format(table))
+    result = await conn.fetch("SELECT MAX(account_id) FROM {} WHERE _last_api_pull > '{}'".format(table, datetime.utcnow().strftime('%Y-%m-%d')))
     for record in result:
         max_account = record['max']
     while True:

@@ -2,6 +2,29 @@ import asyncpg
 from datetime import datetime
 import json
 
+COLUMNS = {
+    'account_id': 'integer NOT NULL',
+    'nickname': 'varchar(34) NOT NULL',
+    'created_at': 'timestamp NOT NULL',
+    'last_battle_time': 'timestamp NOT NULL',
+    'updated_at': 'timestamp NOT NULL',
+    'battles': 'integer NOT NULL',
+    'console': 'varchar(4) NOT NULL',
+    'spotted': 'integer',
+    'wins': 'integer',
+    'damage_dealt': 'integer',
+    'frags': 'integer',
+    'dropped_capture_points': 'integer',
+    '_last_api_pull': 'timestamp NOT NULL'
+}
+
+async def add_missing_columns(conn, table, schema):
+    columns = await conn.fetch(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}' ")
+    columns = list(column['column_name'] for column in columns)
+    for column, definition in schema.items():
+        if column not in columns:
+            __ = await conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+
 
 async def setup_database(db, use_temp=False):
     conn = await asyncpg.connect(**db)
@@ -14,7 +37,14 @@ async def setup_database(db, use_temp=False):
             last_battle_time timestamp NOT NULL,
             updated_at timestamp NOT NULL,
             battles integer NOT NULL,
+            spotted integer NOT NULL,
+            wins integer NOT NULL,
+            damage_dealt integer NOT NULL,
+            frags integer NOT NULL,
+            dropped_capture_points integer NOT NULL,
             _last_api_pull timestamp NOT NULL)''')
+
+    __ = await add_missing_columns(conn, 'players', COLUMNS)
 
     if use_temp:
         __ = await conn.execute('DROP TABLE IF EXISTS temp_players')
@@ -28,21 +58,38 @@ async def setup_database(db, use_temp=False):
                 last_battle_time timestamp NOT NULL,
                 updated_at timestamp NOT NULL,
                 battles integer NOT NULL,
+                spotted integer NOT NULL,
+                wins integer NOT NULL,
+                damage_dealt integer NOT NULL,
+                frags integer NOT NULL,
+                dropped_capture_points integer NOT NULL,
                 _last_api_pull timestamp NOT NULL)''')
 
+    # Cannot set new columns to NOT NULL until data is retroactively added
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL,
-        console varchar(4) NOT NULL)'''.format(
+        console varchar(4) NOT NULL,
+        spotted integer,
+        wins integer,
+        damage_dealt integer,
+        frags integer,
+        dropped_capture_points integer)'''.format(
         datetime.utcnow().strftime('total_battles_%Y_%m_%d'))
     )
 
+    # Cannot set new columns to NOT NULL until data is retroactively added
     __ = await conn.execute('''
         CREATE TABLE {} (
         account_id integer PRIMARY KEY REFERENCES players (account_id),
         battles integer NOT NULL,
-        console varchar(4) NOT NULL)'''.format(
+        console varchar(4) NOT NULL,
+        spotted integer,
+        wins integer,
+        damage_dealt integer,
+        frags integer,
+        dropped_capture_points integer)'''.format(
         datetime.utcnow().strftime('diff_battles_%Y_%m_%d'))
     )
 
@@ -53,11 +100,27 @@ async def setup_database(db, use_temp=False):
               RETURNS trigger AS
             $func$
             BEGIN
-               IF (OLD.battles < NEW.battles) THEN
-                  EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles - $2.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
-               END IF;
-               RETURN NEW;
+              IF (OLD.battles < NEW.battles) THEN
+                EXECUTE format('INSERT INTO total_battles_%s ('
+                  'account_id, battles, console, spotted, wins, damage_dealt, '
+                  'frags, dropped_capture_points'
+                  ') VALUES ('
+                  '$1.account_id, $1.battles, $1.console, $1.spotted, $1.wins, '
+                  '$1.damage_dealt, $1.frags, $1.dropped_capture_points) '
+                  'ON CONFLICT DO NOTHING',
+                  to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                EXECUTE format('INSERT INTO diff_battles_%s ('
+                  'account_id, battles, console, spotted, wins, damage_dealt, '
+                  'frags, dropped_capture_points'
+                  ') VALUES ('
+                  '$1.account_id, $1.battles - $2.battles, $1.console, '
+                  '$1.spotted - $2.spotted, $1.wins - $2.wins, '
+                  '$1.damage_dealt - $2.damage_dealt, $1.frags - $2.frags, '
+                  '$1.dropped_capture_points - $2.dropped_capture_points) '
+                  'ON CONFLICT DO NOTHING',
+                  to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW, OLD;
+              END IF;
+              RETURN NEW;
             END
             $func$ LANGUAGE plpgsql;''')
     except asyncpg.exceptions.DuplicateObjectError:
@@ -76,9 +139,23 @@ async def setup_database(db, use_temp=False):
               RETURNS trigger AS
             $func$
             BEGIN
-              EXECUTE format('INSERT INTO total_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+              EXECUTE format('INSERT INTO total_battles_%s ('
+                'account_id, battles, console, spotted, wins, damage_dealt, '
+                'frags, dropped_capture_points'
+                ') VALUES ('
+                '$1.account_id, $1.battles, $1.console, $1.spotted, $1.wins, '
+                '$1.damage_dealt, $1.frags, $1.dropped_capture_points) '
+                'ON CONFLICT DO NOTHING',
+                to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               IF (NEW.battles > 0) THEN
-                  EXECUTE format('INSERT INTO diff_battles_%s (account_id, battles, console) VALUES ($1.account_id, $1.battles, $1.console) ON CONFLICT DO NOTHING', to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
+                EXECUTE format('INSERT INTO diff_battles_%s ('
+                  'account_id, battles, console, spotted, wins, damage_dealt, '
+                  'frags, dropped_capture_points'
+                  ') VALUES ('
+                  '$1.account_id, $1.battles, $1.console, $1.spotted, $1.wins, '
+                  '$1.damage_dealt, $1.frags, $1.dropped_capture_points) '
+                  'ON CONFLICT DO NOTHING',
+                  to_char(timezone('UTC'::text, now()), 'YYYY_MM_DD')) USING NEW;
               END IF;
               RETURN NEW;
             END

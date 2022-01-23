@@ -177,39 +177,47 @@ def load_local(conf):
 
 
 # generators
-def create_generator_totals(day, query_results):
+def create_generator_totals(day, query_results, _index='total_battles-%Y.%m.%d'):
     return ({
-        "_index": day.strftime("total_battles-%Y.%m.%d"),
+        "_index": day.strftime(_index),
         "_type": "total",
         "_id": player['account_id'],
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
             "console": player['console'],
+            "wins": player.get('wins', None),
+            "damage_dealt": player.get('damage_dealt', None),
+            "frags": player.get('frags', None),
+            "dropped_capture_points": player.get('dropped_capture_points', None),
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)
 
 
-def create_generator_diffs(day, query_results):
+def create_generator_diffs(day, query_results, _index='diff_battles-%Y.%m.%d'):
     return ({
-        "_index": day.strftime("diff_battles-%Y.%m.%d"),
+        "_index": day.strftime(_index),
         "_type": "diff",
         "_id": player['account_id'],
         "_source": {
             "account_id": player['account_id'],
             "battles": player['battles'],
             "console": player['console'],
+            "wins": player.get('wins', None),
+            "damage_dealt": player.get('damage_dealt', None),
+            "frags": player.get('frags', None),
+            "dropped_capture_points": player.get('dropped_capture_points', None),
             "date": day.strftime("%Y-%m-%d")
         }
     } for player in query_results)
 
 
-async def create_generator_players(statement, player_ids):
+async def create_generator_players(statement, player_ids, _index='players'):
     for pid in player_ids:
         player = await statement.fetchrow(pid)
         yield {
-            "_index": "players",
+            "_index": _index,
             "_type": "player",
             "_id": player['account_id'],
             "_source": {
@@ -220,14 +228,18 @@ async def create_generator_players(statement, player_ids):
                 "last_battle_time": player['last_battle_time'],
                 "updated_at": player['updated_at'],
                 "battles": player['battles'],
+                "wins": player.get('wins', None),
+                "damage_dealt": player.get('damage_dealt', None),
+                "frags": player.get('frags', None),
+                "dropped_capture_points": player.get('dropped_capture_points', None),
                 "last_api_pull": player['_last_api_pull']
             }
         }
 
 
-def create_generator_players_sync(query_results):
+def create_generator_players_sync(query_results, _index='players'):
     return ({
-        "_index": "players",
+        "_index": _index,
         "_type": "player",
         "_id": player['account_id'],
         "_source": {
@@ -238,6 +250,10 @@ def create_generator_players_sync(query_results):
             "last_battle_time": player['last_battle_time'],
             "updated_at": player['updated_at'],
             "battles": player['battles'],
+            "wins": player.get('wins', None),
+            "damage_dealt": player.get('damage_dealt', None),
+            "frags": player.get('frags', None),
+            "dropped_capture_points": player.get('dropped_capture_points', None),
             "last_api_pull": player['_last_api_pull']
         }
     } for player in query_results)

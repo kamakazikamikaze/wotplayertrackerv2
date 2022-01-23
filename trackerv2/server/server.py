@@ -427,17 +427,23 @@ async def send_to_elasticsearch(conf, conn, day=datetime.utcnow(), skip_players=
     """
     # Generators get exhausted after a single Elasticsearch instance. Although
     # the intent was to save on memory, I'm afraid we need to gather all docs
+    if 'indices' not in conf:
+        conf['indices'] = {
+            'player': 'players',
+            'diff': 'diff_battles-%Y.%m.%d',
+            'total': 'total_battles-%Y.%m.%d'
+        }
     totals = create_generator_totals(
         day,
-        await conn.fetch('SELECT * FROM total_battles_{}'.format(
-            day.strftime('%Y_%m_%d'))))
+        await conn.fetch('SELECT * FROM total_battles_{}'.format(day.strftime('%Y_%m_%d'))),
+        conf['indices'].get('total', 'total_battles-%Y.%m.%d'))
     logger.info('ES: Sending totals for {}'.format(day.strftime('%Y-%m-%d')))
     totals = [t for t in totals]
     await send_data(conf, totals)
     diffs = create_generator_diffs(
         day,
-        await conn.fetch('SELECT * FROM diff_battles_{}'.format(
-            day.strftime('%Y_%m_%d'))))
+        await conn.fetch('SELECT * FROM diff_battles_{}'.format(day.strftime('%Y_%m_%d'))),
+        conf['indices'].get('diff', 'diff_battles-%Y.%m.%d'))
     logger.info('ES: Sending diffs for {}'.format(day.strftime('%Y-%m-%d')))
     diffs = [d for d in diffs]
     await send_data(conf, diffs)
@@ -448,7 +454,7 @@ async def send_to_elasticsearch(conf, conn, day=datetime.utcnow(), skip_players=
         )
         del diffs, totals
         stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
-        players = create_generator_players(stmt, player_ids)
+        players = create_generator_players(stmt, player_ids, conf['indices'].get('player', 'players'))
         players = [p async for p in players]
         eslog = logging.getLogger('elasticsearch')
         eslog.setLevel(logging.ERROR)
@@ -464,27 +470,30 @@ async def send_everything_to_elasticsearch(conf, conn):
             "table_schema='public' AND table_type='BASE TABLE'"
         )
     )
+    if 'indices' not in conf:
+        conf['indices'] = {
+            'player': 'player_tanks',
+            'diff': 'diff_tanks-%Y.%m.%d',
+            'total': 'total_tanks-%Y.%m.%d'
+        }
     for table in tables:
         logger.info('ES: Sending %s', table['table_name'])
         if 'diff' in table['table_name']:
             diffs = create_generator_diffs(
-                datetime.strptime(
-                    table['table_name'],
-                    'diff_battles_%Y_%m_%d'),
-                await conn.fetch(
-                    'SELECT * from {}'.format(table['table_name'])))
+                datetime.strptime(table['table_name'], 'diff_battles_%Y_%m_%d'),
+                await conn.fetch('SELECT * from {}'.format(table['table_name'])),
+                conf['indices'].get('diff', 'diff_battles-%Y.%m.%d'))
             await send_data(conf, diffs)
         elif 'total' in table['table_name']:
             totals = create_generator_totals(
-                datetime.strptime(
-                    table['table_name'],
-                    'total_battles_%Y_%m_%d'),
-                await conn.fetch(
-                    'SELECT * from {}'.format(table['table_name'])))
+                datetime.strptime(table['table_name'], 'total_battles_%Y_%m_%d'),
+                await conn.fetch('SELECT * from {}'.format(table['table_name'])),
+                conf['indices'].get('total', 'total_battles-%Y.%m.%d'))
             await send_data(conf, totals)
         elif 'players' in table['table_name']:
             players = create_generator_players_sync(
-                await conn.fetch('SELECT * FROM players'))
+                await conn.fetch('SELECT * FROM players'),
+                conf['indices'].get('player', 'players'))
             await send_data(conf, players)
 
 
@@ -507,8 +516,9 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl=
     if tbl == 'players':
         command = (
             'INSERT INTO players ('
-            'account_id, nickname, created_at, last_battle_time,'
-            'updated_at, battles, console, _last_api_pull)'
+            'account_id, nickname, created_at, last_battle_time, '
+            'updated_at, battles, console, wins, damage_dealt, frags, '
+            'dropped_capture_points, _last_api_pull)'
             'VALUES ('
             '$1::int, '
             '$2::text, '
@@ -517,13 +527,22 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl=
             'to_timestamp($5)::timestamp, '
             '$6::int, '
             '$7::text, '
-            'to_timestamp($8)::timestamp) '
+            '$8::int, '
+            '$9::int, '
+            '$10::int, '
+            '$11::int, '
+            'to_timestamp($12)::timestamp) '
             'ON CONFLICT (account_id) DO UPDATE SET ('
-            'nickname, last_battle_time, updated_at, battles, _last_api_pull) = ('
+            'nickname, last_battle_time, updated_at, battles, wins, '
+            'damage_dealt, frags, dropped_capture_points, _last_api_pull) = ('
             'EXCLUDED.nickname, '
             'EXCLUDED.last_battle_time, '
             'EXCLUDED.updated_at, '
             'EXCLUDED.battles, '
+            'EXCLUDED.wins, '
+            'EXCLUDED.damage_dealt, '
+            'EXCLUDED.frags, '
+            'EXCLUDED.dropped_capture_points, '
             'EXCLUDED._last_api_pull) '
             'WHERE players.battles <> EXCLUDED.battles'
         )
@@ -531,7 +550,8 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl=
         command = (
             'INSERT INTO temp_players ('
             'account_id, nickname, created_at, last_battle_time,'
-            'updated_at, battles, console, _last_api_pull)'
+            'updated_at, battles, console, wins, damage_dealt, frags, '
+            'dropped_capture_points, _last_api_pull)'
             'VALUES ('
             '$1::int, '
             '$2::text, '
@@ -540,7 +560,11 @@ async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl=
             'to_timestamp($5)::timestamp, '
             '$6::int, '
             '$7::text, '
-            'to_timestamp($8)::timestamp) '
+            '$8::int, '
+            '$9::int, '
+            '$10::int, '
+            '$11::int, '
+            'to_timestamp($12)::timestamp) '
             'ON CONFLICT DO NOTHING'
         )
     while True:
@@ -641,14 +665,22 @@ async def try_exit(config, configpath):
             # Suggested solution from https://github.com/MagicStack/asyncpg/pull/295#issuecomment-590079485 while waiting for PR merge
             for work in setup_work(config):
                 __ = await conn.execute('''
-                    INSERT INTO players (account_id, nickname, console, created_at,
-                        last_battle_time, updated_at, battles, _last_api_pull)
+                    INSERT INTO players (
+                      account_id, nickname, console, created_at,
+                      last_battle_time, updated_at, battles, spotted, wins,
+                      damage_dealt, frags, dropped_capture_points, _last_api_pull)
                     SELECT * FROM temp_players WHERE account_id BETWEEN $1 AND $2
                     ON CONFLICT (account_id)
-                    DO UPDATE SET (nickname, last_battle_time, updated_at, battles,
-                    console, _last_api_pull) = (EXCLUDED.nickname,
-                    EXCLUDED.last_battle_time, EXCLUDED.updated_at,
-                    EXCLUDED.battles, EXCLUDED.console, EXCLUDED._last_api_pull)
+                    DO UPDATE SET (
+                      nickname, last_battle_time, updated_at, battles,
+                      console, spotted, wins, damage_dealt, frags,
+                      dropped_capture_points, _last_api_pull
+                    ) = (
+                      EXCLUDED.nickname, EXCLUDED.last_battle_time,
+                      EXCLUDED.updated_at, EXCLUDED.battles, EXCLUDED.console,
+                      EXCLUDED.spotted, EXCLUDED.wins, EXCLUDED.damage_dealt,
+                      EXCLUDED.frags, EXCLUDED.dropped_capture_points,
+                      EXCLUDED._last_api_pull)
                     WHERE players.battles <> EXCLUDED.battles''',
                     work[1][0],
                     work[1][1]

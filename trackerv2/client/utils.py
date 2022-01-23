@@ -13,6 +13,7 @@ def getsha1(filename, buffer_size=65536):
             sha1hash.update(data)
     return sha1hash.hexdigest()
 
+
 def load_config(filename='./config/client.json'):
     with open(filename) as f:
         return load(f)
@@ -31,6 +32,10 @@ class Player(NamedTuple):
     updated_at: int
     battles: int
     console: str
+    wins: int
+    damage_dealt: int
+    frags: int
+    dropped_capture_points: int
 
 
 class APIResult(NamedTuple):

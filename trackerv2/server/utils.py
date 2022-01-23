@@ -103,6 +103,11 @@ def create_server_config(filename : str = './config/server.json'):
             'port': 5432,
             'database': 'battletracker'
         },
+        'indices': {
+            'player': 'players',
+            'total': 'total_tanks-%Y.%m.%d',
+            'diff': 'diff_tanks-%Y.%m.%d'
+        },
         'elasticsearch': {
             'clusters': {
                 '<cluster1>': {
@@ -145,6 +150,10 @@ class Player(NamedTuple):
     updated_at: int
     battles: int
     console: str
+    wins: int
+    damage_dealt: int
+    frags: int
+    dropped_capture_points: int
 
 
 class APIResult(NamedTuple):

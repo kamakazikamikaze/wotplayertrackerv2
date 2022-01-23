@@ -165,8 +165,11 @@ class ResultProcessor(object):
                                     p['last_battle_time'],
                                     p['updated_at'],
                                     p['statistics']['all']['battles'],
-                                    'xbox' if p[
-                                        'nickname'][-2:] == '-x' else 'ps'
+                                    'xbox' if p['nickname'][-2:] == '-x' else 'ps',
+                                    p['statistics']['all']['wins'],
+                                    p['statistics']['all']['damage_dealt'],
+                                    p['statistics']['all']['frags'],
+                                    p['statistics']['all']['dropped_capture_points']
                                 ) for __, p in response['data'].items() if p),
                             start.timestamp(),
                             work[0]
@@ -225,7 +228,11 @@ async def query(key, session, workqueue, resultqueue, workdone, log):
             'last_battle_time,'
             'nickname,'
             'updated_at,'
-            'statistics.all.battles'
+            'statistics.all.battles,'
+            'statistics.all.wins,'
+            'statistics.all.damage_dealt,'
+            'statistics.all.frags,'
+            'statistics.all.dropped_capture_points'
         ),
         'language': 'en'
     }

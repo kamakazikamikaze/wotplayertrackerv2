@@ -32,6 +32,7 @@ class Player(NamedTuple):
     updated_at: int
     battles: int
     console: str
+    spotted: int
     wins: int
     damage_dealt: int
     frags: int

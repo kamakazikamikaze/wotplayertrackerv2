@@ -166,6 +166,7 @@ class ResultProcessor(object):
                                     p['updated_at'],
                                     p['statistics']['all']['battles'],
                                     'xbox' if p['nickname'][-2:] == '-x' else 'ps',
+                                    p['statistics']['all']['spotted'],
                                     p['statistics']['all']['wins'],
                                     p['statistics']['all']['damage_dealt'],
                                     p['statistics']['all']['frags'],
@@ -228,6 +229,7 @@ async def query(key, session, workqueue, resultqueue, workdone, log):
             'last_battle_time,'
             'nickname,'
             'updated_at,'
+            'statistics.all.spotted,'
             'statistics.all.battles,'
             'statistics.all.wins,'
             'statistics.all.damage_dealt,'

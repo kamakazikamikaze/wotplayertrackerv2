@@ -19,7 +19,7 @@ COLUMNS = {
 }
 
 async def add_missing_columns(conn, table, schema):
-    columns = await conn.fetch(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}' ")
+    columns = await conn.fetch(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'")
     columns = list(column['column_name'] for column in columns)
     for column, definition in schema.items():
         if column not in columns:

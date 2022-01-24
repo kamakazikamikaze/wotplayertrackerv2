@@ -16,7 +16,7 @@ def create_index(conf):
     pass
 
 
-async def send_data(conf, data, action='create'):
+async def send_data(conf, data):
     r"""
     Send data to Elasticsearch cluster(s)
     :param dict conf: Full configuration
@@ -24,10 +24,7 @@ async def send_data(conf, data, action='create'):
     """
     for name, cluster in conf['elasticsearch']['clusters'].items():
         try:
-            if action == 'create':
-                await _send_to_cluster(cluster, data)
-            elif action == 'update':
-                await _update_to_cluster(cluster, data)
+            await _send_to_cluster(cluster, data)
         except (BulkIndexError, TransportError) as err:
             print('ES: Error:', err)
             if 'offload' in conf['elasticsearch']:
@@ -77,37 +74,6 @@ async def _send_to_cluster_skip_errors(conf, data, retry=5):
                 break
             except:
                 attempts -= 1
-
-
-async def _update_to_cluster(conf, data):
-    es = Elasticsearch(**conf)
-    if any(isinstance(data, t) for t in (GeneratorType, set, list)):
-        for doc in data:
-            try:
-                es.update(
-                    index=doc['_index'],
-                    doc_type=doc['_type'],
-                    id=doc['_id'],
-                    body={'doc': doc['_source']}
-                )
-            except TransportError as te:
-                if te.args[1] == 'document_missing_exception':
-                    helpers.bulk(es, [doc])
-                else:
-                    raise te
-    elif isinstance(data, AsyncGeneratorType):
-        async for doc in data:
-            try:
-                es.update(
-                    index=doc['_index'],
-                    doc_type=doc['_type'],
-                    id=doc['_id'],
-                    body={'doc': doc['_source']})
-            except TransportError as te:
-                if te.args[1] == 'document_missing_exception':
-                    helpers.bulk(es, [doc])
-                else:
-                    raise te
 
 
 async def offload_local(name, clusterconf, dumpconf, data):
@@ -186,6 +152,7 @@ def create_generator_totals(day, query_results, _index='total_battles-%Y.%m.%d')
             "account_id": player['account_id'],
             "battles": player['battles'],
             "console": player['console'],
+            "spotted": player.get('spotted', None),
             "wins": player.get('wins', None),
             "damage_dealt": player.get('damage_dealt', None),
             "frags": player.get('frags', None),
@@ -204,6 +171,7 @@ def create_generator_diffs(day, query_results, _index='diff_battles-%Y.%m.%d'):
             "account_id": player['account_id'],
             "battles": player['battles'],
             "console": player['console'],
+            "spotted": player.get('spotted', None),
             "wins": player.get('wins', None),
             "damage_dealt": player.get('damage_dealt', None),
             "frags": player.get('frags', None),
@@ -228,6 +196,7 @@ async def create_generator_players(statement, player_ids, _index='players'):
                 "last_battle_time": player['last_battle_time'],
                 "updated_at": player['updated_at'],
                 "battles": player['battles'],
+                "spotted": player.get('spotted', None),
                 "wins": player.get('wins', None),
                 "damage_dealt": player.get('damage_dealt', None),
                 "frags": player.get('frags', None),
@@ -250,6 +219,7 @@ def create_generator_players_sync(query_results, _index='players'):
             "last_battle_time": player['last_battle_time'],
             "updated_at": player['updated_at'],
             "battles": player['battles'],
+            "spotted": player.get('spotted', None),
             "wins": player.get('wins', None),
             "damage_dealt": player.get('damage_dealt', None),
             "frags": player.get('frags', None),

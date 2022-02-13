@@ -20,9 +20,6 @@ from tornado.escape import json_decode, json_encode
 import tracemalloc
 
 from database import setup_database
-from sendtoindexer import create_generator_diffs, create_generator_players
-from sendtoindexer import create_generator_players_sync, send_data
-from sendtoindexer import create_generator_totals, _send_to_cluster_skip_errors
 from utils import genuuid, genhashes, load_config, nested_dd, write_config
 # Import APIResult and Player as we will unpickle them. Ignore unused warnings
 from utils import create_client_config, create_server_config, APIResult, Player
@@ -419,97 +416,6 @@ class TelemetryWSHandler(websocket.WebSocketHandler):
         telelogger.debug(genuuid(self.request.remote_ip) + message)
 
 
-async def send_to_elasticsearch(conf, conn, day=datetime.utcnow(), skip_players=False):
-    r"""
-    Send updates to Elasticsearch.
-
-    This method should be called once work has concluded.
-    """
-    # Generators get exhausted after a single Elasticsearch instance. Although
-    # the intent was to save on memory, I'm afraid we need to gather all docs
-    if 'indices' not in conf:
-        conf['indices'] = {
-            'player': 'players',
-            'diff': 'diff_battles-%Y.%m.%d',
-            'total': 'total_battles-%Y.%m.%d'
-        }
-    totals = create_generator_totals(
-        day,
-        await conn.fetch('SELECT * FROM total_battles_{}'.format(day.strftime('%Y_%m_%d'))),
-        conf['indices'].get('total', 'total_battles-%Y.%m.%d'))
-    logger.info('ES: Sending totals for {}'.format(day.strftime('%Y-%m-%d')))
-    totals = [t for t in totals]
-    await send_data(conf, totals)
-    diffs = create_generator_diffs(
-        day,
-        await conn.fetch('SELECT * FROM diff_battles_{}'.format(day.strftime('%Y_%m_%d'))),
-        conf['indices'].get('diff', 'diff_battles-%Y.%m.%d'))
-    logger.info('ES: Sending diffs for {}'.format(day.strftime('%Y-%m-%d')))
-    diffs = [d for d in diffs]
-    await send_data(conf, diffs)
-    if not skip_players:
-        player_ids = set.union(
-            set(map(lambda p: int(p['_source']['account_id']), totals)),
-            set(map(lambda p: int(p['_source']['account_id']), diffs))
-        )
-        del diffs, totals
-        stmt = await conn.prepare('SELECT * FROM players WHERE account_id = $1')
-        players = create_generator_players(stmt, player_ids, conf['indices'].get('player', 'players'))
-        players = [p async for p in players]
-        eslog = logging.getLogger('elasticsearch')
-        eslog.setLevel(logging.ERROR)
-        logger.info('ES: Sending players for {}'.format(day.strftime('%Y-%m-%d')))
-        await send_data(conf, players)
-    logger.info('ES: Finished')
-
-
-async def send_everything_to_elasticsearch(conf, conn):
-    tables = await conn.fetch(
-        (
-            "SELECT table_name FROM information_schema.tables WHERE "
-            "table_schema='public' AND table_type='BASE TABLE'"
-        )
-    )
-    if 'indices' not in conf:
-        conf['indices'] = {
-            'player': 'player_tanks',
-            'diff': 'diff_tanks-%Y.%m.%d',
-            'total': 'total_tanks-%Y.%m.%d'
-        }
-    for table in tables:
-        logger.info('ES: Sending %s', table['table_name'])
-        if 'diff' in table['table_name']:
-            diffs = create_generator_diffs(
-                datetime.strptime(table['table_name'], 'diff_battles_%Y_%m_%d'),
-                await conn.fetch('SELECT * from {}'.format(table['table_name'])),
-                conf['indices'].get('diff', 'diff_battles-%Y.%m.%d'))
-            await send_data(conf, diffs)
-        elif 'total' in table['table_name']:
-            totals = create_generator_totals(
-                datetime.strptime(table['table_name'], 'total_battles_%Y_%m_%d'),
-                await conn.fetch('SELECT * from {}'.format(table['table_name'])),
-                conf['indices'].get('total', 'total_battles-%Y.%m.%d'))
-            await send_data(conf, totals)
-        elif 'players' in table['table_name']:
-            players = create_generator_players_sync(
-                await conn.fetch('SELECT * FROM players'),
-                conf['indices'].get('player', 'players'))
-            await send_data(conf, players)
-
-
-async def send_missing_players_to_elasticsearch(conf, conn):
-    r"""
-    Synchronizes players from an existing database to Elasticsearch.
-
-    Only updated players have information sent to ES. If a new cluster
-    is added, it will not have all players in it as a result.
-    """
-    players = [p for p in create_generator_players_sync(
-        await conn.fetch('SELECT * FROM players'))]
-    for name, cluster in conf['elasticsearch']['clusters'].items():
-        await _send_to_cluster_skip_errors(cluster, players)
-
-
 async def send_results_to_database(db_pool, res_queue, work_done, par, chi, tbl='players'):
     logger = logging.getLogger('WoTServer')
     logger.debug('Process-%i: Async-%i created', par, chi)
@@ -634,9 +540,10 @@ async def advance_work(config, table='players'):
     global completedcount
     conn = await connect(**config['database'])
     logger.info('Fetching data from table')
-    result = await conn.fetch("SELECT MAX(account_id) FROM {} WHERE _last_api_pull > '{}'".format(table, datetime.utcnow().strftime('%Y-%m-%d')))
+    result = await conn.fetch("SELECT MAX(account_id) FROM {} WHERE _last_api_pull >= '{}'".format(table, datetime.utcnow().strftime('%Y-%m-%d')))
     for record in result:
         max_account = record['max']
+    logger.debug('Max account: %i', max_account)
     while True:
         popped = next(workgenerator)
         completedcount += 1
@@ -730,10 +637,6 @@ async def try_exit(config, configpath):
                 write_config(config, configpath)
         else:
             logger.debug('Not expanding player ID range')
-
-        if 'elasticsearch' in config and config['elasticsearch']['clusters']:
-            logger.info('Sending data to Elasticsearch')
-            await send_to_elasticsearch(config, conn)
 
         logger.info('Shutting down server')
         ioloop.IOLoop.current().stop()

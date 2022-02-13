@@ -103,26 +103,6 @@ def create_server_config(filename : str = './config/server.json'):
             'port': 5432,
             'database': 'battletracker'
         },
-        'indices': {
-            'player': 'players',
-            'total': 'total_tanks-%Y.%m.%d',
-            'diff': 'diff_tanks-%Y.%m.%d'
-        },
-        'elasticsearch': {
-            'clusters': {
-                '<cluster1>': {
-                    'hosts': [],
-                    'sniff_on_start': True,
-                    'sniff_on_connection_fail': True,
-                    'sniffer_timeout': 30
-                }
-            },
-            'offload': {
-                'data folder': '/srv/battletrackerv2/offload/dumps',
-                'delete old index on reload': True,
-                'index': '/srv/battletrackerv2/offload/index.txt'
-            }
-        },
         'debug access': ['127.0.0.1'],
         'telemetry': {
             'file': 'logs/telemetry-%Y_%m_%d',

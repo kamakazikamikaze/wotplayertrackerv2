@@ -95,9 +95,6 @@ async def setup_database(db, use_temp=False):
 
         CREATE UNIQUE INDEX IF NOT EXISTS total_battles_account_id_idx
             ON total_battles USING btree (account_id, _date);
-
-        CREATE INDEX IF NOT EXISTS total_battles_date_idx
-            ON total_battles USING btree (_date);
         ''')
 
     __ = await add_missing_columns(conn, 'total_battles', SERIES_COLUMNS)
@@ -117,11 +114,8 @@ async def setup_database(db, use_temp=False):
             _date date NOT NULL
         ) PARTITION BY RANGE (_date);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS diff_battles_account_idx
+        CREATE UNIQUE INDEX IF NOT EXISTS diff_battles_account_id_idx
             ON diff_battles USING btree (account_id, _date);
-
-        CREATE INDEX IF NOT EXISTS diff_battles_date_idx
-            ON diff_battles USING btree (_date);
         ''')
 
     __ = await add_missing_columns(conn, 'diff_battles', SERIES_COLUMNS)
